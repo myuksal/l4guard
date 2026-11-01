@@ -30,6 +30,14 @@ Quota와 마찬가지로 지표도 **복제본별 값**이므로, 전체 트래�
 | `l4guard_bytes_total{direction="upstream"}` | counter | client → upstream 전송 바이트 |
 | `l4guard_bytes_total{direction="client"}` | counter | upstream → client 전송 바이트 |
 | `l4guard_policy_version` | gauge | 현재 적용된 정책 snapshot의 버전 |
+| `l4guard_l7_requests_total` | counter | L7 listener가 검사한 HTTP 요청 수 |
+| `l4guard_l7_forwarded_total` | counter | L7 검사를 통과해 upstream으로 전달한 요청 수 |
+| `l4guard_l7_rejected_total{reason="..."}` | counter | 사유별 L7 요청 거부 수 |
+
+L7 거부 사유는 `malformed`, `header`, `body`, `timeout`, `method`,
+`encoding`, `upgrade`, `json`, `policy`, `quota`다. 연결 거부 카운터와 단위가
+다르므로 `l4guard_rejected_total`과 분리해 집계한다. 상세 내용은
+`docs/l7.md`에 기록한다.
 
 `l4guard_policy_version`은 정책과 quota의 입장 관련 설정으로 계산한 결정적
 digest다. 같은 설정을 쓰는 복제본은 재시작 여부와 관계없이 같은 값을

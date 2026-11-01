@@ -415,8 +415,90 @@ fn render_counters(out: &mut String, snapshot: &StatsSnapshot) {
         snapshot.accepted,
     );
     render_rejections(out, snapshot);
+    render_l7(out, snapshot);
     render_failures(out, snapshot);
     render_bytes(out, snapshot);
+}
+
+fn render_l7(out: &mut String, snapshot: &StatsSnapshot) {
+    counter(
+        out,
+        "l4guard_l7_requests_total",
+        "HTTP requests inspected on L7 listeners.",
+        snapshot.l7_requests,
+    );
+    counter(
+        out,
+        "l4guard_l7_forwarded_total",
+        "HTTP requests forwarded to an upstream.",
+        snapshot.l7_forwarded,
+    );
+    labeled_header(
+        out,
+        "l4guard_l7_rejected_total",
+        "counter",
+        "L7 requests rejected, by reason.",
+    );
+    labeled_value(
+        out,
+        "l4guard_l7_rejected_total",
+        "malformed",
+        snapshot.l7_rejected_malformed,
+    );
+    labeled_value(
+        out,
+        "l4guard_l7_rejected_total",
+        "header",
+        snapshot.l7_rejected_header,
+    );
+    labeled_value(
+        out,
+        "l4guard_l7_rejected_total",
+        "body",
+        snapshot.l7_rejected_body,
+    );
+    labeled_value(
+        out,
+        "l4guard_l7_rejected_total",
+        "timeout",
+        snapshot.l7_rejected_timeout,
+    );
+    labeled_value(
+        out,
+        "l4guard_l7_rejected_total",
+        "method",
+        snapshot.l7_rejected_method,
+    );
+    labeled_value(
+        out,
+        "l4guard_l7_rejected_total",
+        "encoding",
+        snapshot.l7_rejected_encoding,
+    );
+    labeled_value(
+        out,
+        "l4guard_l7_rejected_total",
+        "upgrade",
+        snapshot.l7_rejected_upgrade,
+    );
+    labeled_value(
+        out,
+        "l4guard_l7_rejected_total",
+        "json",
+        snapshot.l7_rejected_json,
+    );
+    labeled_value(
+        out,
+        "l4guard_l7_rejected_total",
+        "policy",
+        snapshot.l7_rejected_policy,
+    );
+    labeled_value(
+        out,
+        "l4guard_l7_rejected_total",
+        "quota",
+        snapshot.l7_rejected_quota,
+    );
 }
 
 fn render_rejections(out: &mut String, snapshot: &StatsSnapshot) {
@@ -623,6 +705,10 @@ mod tests {
             bytes_to_upstream: 1_024,
             bytes_to_client: 2_048,
             policy_version: 42,
+            l7_requests: 9,
+            l7_forwarded: 7,
+            l7_rejected_policy: 2,
+            ..StatsSnapshot::default()
         };
 
         let rendered = render_metrics(&snapshot);
@@ -632,6 +718,9 @@ mod tests {
         assert!(rendered.contains("l4guard_upstream_failures_total{reason=\"timeout\"} 1"));
         assert!(rendered.contains("l4guard_bytes_total{direction=\"upstream\"} 1024"));
         assert!(rendered.contains("l4guard_policy_version 42"));
+        assert!(rendered.contains("l4guard_l7_requests_total 9"));
+        assert!(rendered.contains("l4guard_l7_forwarded_total 7"));
+        assert!(rendered.contains("l4guard_l7_rejected_total{reason=\"policy\"} 2"));
         assert!(!rendered.contains("allow"));
         assert!(!rendered.contains("127.0.0.1"));
     }

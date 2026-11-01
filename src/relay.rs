@@ -54,6 +54,7 @@ use crate::config;
 use crate::config::Config;
 use crate::config::Endpoint;
 use crate::config::ListenerMode;
+use crate::l7;
 use crate::policy::PolicyStore;
 use crate::policy::PolicyVersion;
 use crate::policy::RuntimePolicy;
@@ -525,6 +526,7 @@ struct ListenerContext {
     bandwidth: Option<BandwidthLimiter>,
     gate: Arc<ListenerGate>,
     rate: TokenBucket,
+    l7: Option<l7::L7Context>,
 }
 
 impl ListenerContext {
@@ -539,6 +541,7 @@ impl ListenerContext {
             bandwidth: BandwidthLimiter::new(limits.bandwidth_limit_bytes_per_second),
             gate,
             rate: TokenBucket::new(),
+            l7: listener.l7.as_ref().map(l7::L7Context::new),
             shared,
         }
     }
@@ -787,7 +790,7 @@ async fn handle_session(
     let outcome = tokio::select! {
         biased;
         () = session.cancel().cancelled() => Err(SessionError::Cancelled),
-        result = relay(context.as_ref(), stream) => result,
+        result = relay(context.as_ref(), stream, peer) => result,
     };
     record_outcome(&context, peer, started, &session, outcome);
     // Return the admission slots before the registry entry, so a drain that
@@ -904,11 +907,15 @@ fn record_outcome(
     }
 }
 
-/// Connects to the fixed upstream and copies bytes in both directions.
+/// Serves one session with raw byte relay or L7 inspection.
 async fn relay(
     context: &ListenerContext,
     mut stream: TcpStream,
+    peer: SocketAddr,
 ) -> Result<(u64, u64), SessionError> {
+    if let Some(state) = context.l7.as_ref() {
+        return relay_l7(context, state, &mut stream, peer).await;
+    }
     let mut upstream = connect_endpoint(
         &context.upstream,
         context.shared.config.limits.connect_timeout(),
@@ -918,6 +925,65 @@ async fn relay(
     copy_streams(&mut stream, &mut upstream, context.bandwidth.as_ref())
         .await
         .map_err(SessionError::Copy)
+}
+
+/// Inspects one HTTP request and relays it when the policy allows.
+async fn relay_l7(
+    context: &ListenerContext,
+    inspector: &l7::L7Context,
+    stream: &mut TcpStream,
+    peer: SocketAddr,
+) -> Result<(u64, u64), SessionError> {
+    let policy = context.shared.policy.current();
+    let outcome = l7::serve(
+        stream,
+        &context.upstream,
+        context.shared.config.limits.connect_timeout(),
+        inspector,
+        &policy,
+        context.bandwidth.as_ref(),
+    )
+    .await
+    .map_err(|error| match error {
+        l7::Error::Connect(error) => SessionError::Connect(error),
+        l7::Error::Io(error) => SessionError::Copy(error),
+    })?;
+    let stats = &context.shared.stats;
+    if outcome.forwarded || outcome.reject.is_some() {
+        stats.l7_requests.fetch_add(1, Ordering::Relaxed);
+    }
+    if let Some(reject) = outcome.reject {
+        record_l7_rejection(context, peer, reject);
+    }
+    if outcome.forwarded {
+        stats.l7_forwarded.fetch_add(1, Ordering::Relaxed);
+    }
+    Ok((outcome.to_upstream, outcome.to_client))
+}
+
+/// Counts and logs one rejected L7 request.
+fn record_l7_rejection(context: &ListenerContext, peer: SocketAddr, reject: l7::Reject) {
+    let stats = &context.shared.stats;
+    let counter = match reject {
+        l7::Reject::Malformed => &stats.l7_rejected_malformed,
+        l7::Reject::Header => &stats.l7_rejected_header,
+        l7::Reject::Body => &stats.l7_rejected_body,
+        l7::Reject::Timeout => &stats.l7_rejected_timeout,
+        l7::Reject::Method => &stats.l7_rejected_method,
+        l7::Reject::Encoding => &stats.l7_rejected_encoding,
+        l7::Reject::Upgrade => &stats.l7_rejected_upgrade,
+        l7::Reject::Json => &stats.l7_rejected_json,
+        l7::Reject::Policy => &stats.l7_rejected_policy,
+        l7::Reject::Quota => &stats.l7_rejected_quota,
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
+    debug!(
+        listener = %context.name,
+        %peer,
+        reason = reject.reason(),
+        version = %context.shared.policy.current().version(),
+        "rpc request rejected"
+    );
 }
 
 /// Failure while serving one session.
@@ -939,7 +1005,7 @@ impl std::fmt::Display for SessionError {
 
 /// Failure while establishing the upstream connection.
 #[derive(Debug)]
-enum ConnectError {
+pub(crate) enum ConnectError {
     /// The connect deadline elapsed before the socket was ready.
     Timeout,
     /// The socket could not be opened.
@@ -965,7 +1031,7 @@ impl std::error::Error for ConnectError {
 }
 
 /// Resolves and connects to `endpoint` within `deadline`.
-async fn connect_endpoint(
+pub(crate) async fn connect_endpoint(
     endpoint: &Endpoint,
     deadline: Duration,
 ) -> Result<TcpStream, ConnectError> {
@@ -1049,7 +1115,7 @@ where
 ///
 /// Tokens refill continuously. A read waits until enough tokens exist for the
 /// chunk it just read, so data already read is never discarded.
-struct BandwidthLimiter {
+pub(crate) struct BandwidthLimiter {
     bytes_per_second: u64,
     capacity: u64,
     state: tokio::sync::Mutex<Bucket>,
@@ -1078,7 +1144,7 @@ impl BandwidthLimiter {
     }
 
     /// Waits until `bytes` may be written to the other side.
-    async fn acquire(&self, bytes: usize) {
+    pub(crate) async fn acquire(&self, bytes: usize) {
         debug_assert!(bytes <= COPY_BUFFER_SIZE);
         let bytes = bytes as u64;
         if bytes == 0 {
@@ -1150,6 +1216,18 @@ struct Stats {
     bytes_to_upstream: AtomicU64,
     bytes_to_client: AtomicU64,
     policy_version: AtomicU64,
+    l7_requests: AtomicU64,
+    l7_forwarded: AtomicU64,
+    l7_rejected_malformed: AtomicU64,
+    l7_rejected_header: AtomicU64,
+    l7_rejected_body: AtomicU64,
+    l7_rejected_timeout: AtomicU64,
+    l7_rejected_method: AtomicU64,
+    l7_rejected_encoding: AtomicU64,
+    l7_rejected_upgrade: AtomicU64,
+    l7_rejected_json: AtomicU64,
+    l7_rejected_policy: AtomicU64,
+    l7_rejected_quota: AtomicU64,
 }
 
 /// A point-in-time copy of relay counters.
@@ -1189,6 +1267,30 @@ pub struct StatsSnapshot {
     pub bytes_to_client: u64,
     /// Version of the policy that is currently active.
     pub policy_version: u64,
+    /// HTTP requests inspected on L7 listeners.
+    pub l7_requests: u64,
+    /// HTTP requests forwarded to an upstream.
+    pub l7_forwarded: u64,
+    /// L7 requests rejected as malformed.
+    pub l7_rejected_malformed: u64,
+    /// L7 requests rejected for exceeding the header limit.
+    pub l7_rejected_header: u64,
+    /// L7 requests rejected for exceeding the body limit.
+    pub l7_rejected_body: u64,
+    /// L7 requests rejected because receiving them timed out.
+    pub l7_rejected_timeout: u64,
+    /// L7 requests rejected because the HTTP method is unsupported.
+    pub l7_rejected_method: u64,
+    /// L7 requests rejected for using an unsupported encoding.
+    pub l7_rejected_encoding: u64,
+    /// L7 requests rejected because the client attempted an upgrade.
+    pub l7_rejected_upgrade: u64,
+    /// L7 requests rejected because the JSON was invalid or too large.
+    pub l7_rejected_json: u64,
+    /// L7 requests rejected by the method policy or emergency block.
+    pub l7_rejected_policy: u64,
+    /// L7 requests rejected by a per-method quota.
+    pub l7_rejected_quota: u64,
 }
 
 impl Stats {
@@ -1211,6 +1313,18 @@ impl Stats {
             bytes_to_upstream: self.bytes_to_upstream.load(Ordering::Relaxed),
             bytes_to_client: self.bytes_to_client.load(Ordering::Relaxed),
             policy_version: self.policy_version.load(Ordering::Relaxed),
+            l7_requests: self.l7_requests.load(Ordering::Relaxed),
+            l7_forwarded: self.l7_forwarded.load(Ordering::Relaxed),
+            l7_rejected_malformed: self.l7_rejected_malformed.load(Ordering::Relaxed),
+            l7_rejected_header: self.l7_rejected_header.load(Ordering::Relaxed),
+            l7_rejected_body: self.l7_rejected_body.load(Ordering::Relaxed),
+            l7_rejected_timeout: self.l7_rejected_timeout.load(Ordering::Relaxed),
+            l7_rejected_method: self.l7_rejected_method.load(Ordering::Relaxed),
+            l7_rejected_encoding: self.l7_rejected_encoding.load(Ordering::Relaxed),
+            l7_rejected_upgrade: self.l7_rejected_upgrade.load(Ordering::Relaxed),
+            l7_rejected_json: self.l7_rejected_json.load(Ordering::Relaxed),
+            l7_rejected_policy: self.l7_rejected_policy.load(Ordering::Relaxed),
+            l7_rejected_quota: self.l7_rejected_quota.load(Ordering::Relaxed),
         }
     }
 }
@@ -2010,6 +2124,329 @@ new_connection_burst = 1
     #[test]
     fn zero_bandwidth_means_unlimited() {
         assert!(BandwidthLimiter::new(0).is_none());
+    }
+
+    #[tokio::test]
+    async fn l7_forwards_an_allowed_request_as_a_new_request() {
+        let (upstream, received) = spawn_http_upstream().await;
+        let config = l7_config(upstream, "");
+        let endpoint = Endpoint::from_str(&upstream.to_string()).expect("endpoint");
+        let relay = start_relay(config, endpoint).await;
+
+        let body = r#"{"jsonrpc":"2.0","method":"eth_call","id":1}"#;
+        let request = format!(
+            "POST / HTTP/1.1\r\nHost: node\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Dropped: yes\r\n\r\n{body}",
+            body.len()
+        );
+        let response = l7_request(relay.address, &request).await;
+
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "response: {response}"
+        );
+        let request = received.await.expect("captured request");
+        let request = String::from_utf8(request).expect("request text");
+        assert!(request.starts_with("POST / HTTP/1.1\r\n"));
+        assert!(request.contains("Host: node\r\n"));
+        assert!(request.contains("Content-Type: application/json\r\n"));
+        assert!(request.contains(&format!("Content-Length: {}\r\n", body.len())));
+        assert!(request.contains("Connection: close\r\n"));
+        assert!(!request.contains("X-Dropped"));
+        assert!(request.ends_with(body));
+
+        wait_until(|| relay.stats.snapshot().l7_forwarded == 1).await;
+        let snapshot = relay.stats.snapshot();
+        assert_eq!(snapshot.l7_requests, 1);
+        assert_eq!(snapshot.l7_rejected_policy, 0);
+    }
+
+    #[tokio::test]
+    async fn l7_rejects_a_method_outside_the_allowlist() {
+        let (upstream, received) = spawn_http_upstream().await;
+        let config = l7_config(upstream, "");
+        let endpoint = Endpoint::from_str(&upstream.to_string()).expect("endpoint");
+        let relay = start_relay(config, endpoint).await;
+
+        let body = r#"{"jsonrpc":"2.0","method":"debug_trace","id":1}"#;
+        let request = format!(
+            "POST / HTTP/1.1\r\nHost: node\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let response = l7_request(relay.address, &request).await;
+
+        assert!(
+            response.starts_with("HTTP/1.1 403 Forbidden"),
+            "response: {response}"
+        );
+        assert!(
+            timeout(Duration::from_millis(100), received).await.is_err(),
+            "the upstream must not be contacted"
+        );
+        wait_until(|| relay.stats.snapshot().l7_rejected_policy == 1).await;
+    }
+
+    #[tokio::test]
+    async fn l7_rejects_a_batch_with_one_disallowed_item() {
+        let (upstream, received) = spawn_http_upstream().await;
+        let config = l7_config(upstream, "");
+        let endpoint = Endpoint::from_str(&upstream.to_string()).expect("endpoint");
+        let relay = start_relay(config, endpoint).await;
+
+        let body = r#"[{"method":"eth_call","id":1},{"method":"debug_trace","id":2}]"#;
+        let request = format!(
+            "POST / HTTP/1.1\r\nHost: node\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let response = l7_request(relay.address, &request).await;
+
+        assert!(
+            response.starts_with("HTTP/1.1 403 Forbidden"),
+            "response: {response}"
+        );
+        assert!(
+            timeout(Duration::from_millis(100), received).await.is_err(),
+            "the upstream must not be contacted"
+        );
+        wait_until(|| relay.stats.snapshot().l7_rejected_policy == 1).await;
+    }
+
+    #[tokio::test]
+    async fn l7_rejects_upgrade_and_smuggling_shapes() {
+        let (upstream, _received) = spawn_http_upstream().await;
+        let config = l7_config(upstream, "");
+        let endpoint = Endpoint::from_str(&upstream.to_string()).expect("endpoint");
+        let relay = start_relay(config, endpoint).await;
+
+        let upgrade = l7_request(
+            relay.address,
+            "GET /status HTTP/1.1\r\nHost: node\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+        )
+        .await;
+        assert!(upgrade.starts_with("HTTP/1.1 400 Bad Request"));
+
+        let smuggling = l7_request(
+            relay.address,
+            "POST / HTTP/1.1\r\nHost: node\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n{}",
+        )
+        .await;
+        assert!(smuggling.starts_with("HTTP/1.1 400 Bad Request"));
+
+        wait_until(|| relay.stats.snapshot().l7_rejected_malformed == 1).await;
+        let snapshot = relay.stats.snapshot();
+        assert_eq!(snapshot.l7_rejected_upgrade, 1);
+    }
+
+    #[tokio::test]
+    async fn l7_enforces_header_and_body_limits() {
+        let (upstream, _received) = spawn_http_upstream().await;
+        let config = l7_config(upstream, "max_header_bytes = 256\nmax_body_bytes = 8\n");
+        let endpoint = Endpoint::from_str(&upstream.to_string()).expect("endpoint");
+        let relay = start_relay(config, endpoint).await;
+
+        let large_header = format!(
+            "GET /status HTTP/1.1\r\nHost: node\r\nX-Pad: {}\r\n\r\n",
+            "a".repeat(512)
+        );
+        let response = l7_request(relay.address, &large_header).await;
+        assert!(response.starts_with("HTTP/1.1 431"), "response: {response}");
+
+        let large_body = "POST / HTTP/1.1\r\nHost: node\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n{}";
+        let response = l7_request(relay.address, large_body).await;
+        assert!(response.starts_with("HTTP/1.1 413"), "response: {response}");
+
+        wait_until(|| relay.stats.snapshot().l7_rejected_body == 1).await;
+        let snapshot = relay.stats.snapshot();
+        assert_eq!(snapshot.l7_rejected_header, 1);
+    }
+
+    #[tokio::test]
+    async fn l7_decodes_chunked_bodies_and_sets_content_length() {
+        let (upstream, received) = spawn_http_upstream().await;
+        let config = l7_config(upstream, "");
+        let endpoint = Endpoint::from_str(&upstream.to_string()).expect("endpoint");
+        let relay = start_relay(config, endpoint).await;
+
+        let body = r#"{"jsonrpc":"2.0","method":"eth_call","id":1}"#;
+        let chunked = format!("{:x}\r\n{body}\r\n0\r\n\r\n", body.len());
+        let request = format!(
+            "POST / HTTP/1.1\r\nHost: node\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{chunked}"
+        );
+        let response = l7_request(relay.address, &request).await;
+
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "response: {response}"
+        );
+        let request = received.await.expect("captured request");
+        let request = String::from_utf8(request).expect("request text");
+        assert!(request.contains(&format!("Content-Length: {}\r\n", body.len())));
+        assert!(!request.contains("Transfer-Encoding"));
+        assert!(request.ends_with(body));
+    }
+
+    #[tokio::test]
+    async fn l7_supports_expect_continue() {
+        let (upstream, received) = spawn_http_upstream().await;
+        let config = l7_config(upstream, "");
+        let endpoint = Endpoint::from_str(&upstream.to_string()).expect("endpoint");
+        let relay = start_relay(config, endpoint).await;
+
+        let body = r#"{"jsonrpc":"2.0","method":"eth_call","id":1}"#;
+        let head = format!(
+            "POST / HTTP/1.1\r\nHost: node\r\nContent-Type: application/json\r\nContent-Length: {}\r\nExpect: 100-continue\r\n\r\n",
+            body.len()
+        );
+        let mut client = TcpStream::connect(relay.address)
+            .await
+            .expect("connect L7 relay");
+        client.write_all(head.as_bytes()).await.expect("write head");
+        let mut interim = [0_u8; 64];
+        let read = timeout(Duration::from_secs(1), client.read(&mut interim))
+            .await
+            .expect("continue timeout")
+            .expect("read continue");
+        assert!(
+            String::from_utf8_lossy(&interim[..read]).starts_with("HTTP/1.1 100 Continue"),
+            "expected 100 Continue"
+        );
+
+        client.write_all(body.as_bytes()).await.expect("write body");
+        let mut response = Vec::new();
+        timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+            .await
+            .expect("response timeout")
+            .expect("read response");
+        assert!(
+            String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200 OK"),
+            "response: {}",
+            String::from_utf8_lossy(&response)
+        );
+
+        let request = received.await.expect("captured request");
+        assert!(
+            String::from_utf8_lossy(&request).ends_with(body),
+            "upstream request must include the body"
+        );
+    }
+
+    #[tokio::test]
+    async fn l7_inspects_cometbft_get_uri_calls() {
+        let (upstream, received) = spawn_http_upstream().await;
+        let config = l7_config(upstream, "");
+        let endpoint = Endpoint::from_str(&upstream.to_string()).expect("endpoint");
+        let relay = start_relay(config, endpoint).await;
+
+        let response = l7_request(
+            relay.address,
+            "GET /status?height=1 HTTP/1.1\r\nHost: node\r\n\r\n",
+        )
+        .await;
+
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "response: {response}"
+        );
+        let request = received.await.expect("captured request");
+        let request = String::from_utf8(request).expect("request text");
+        assert!(request.starts_with("GET /status?height=1 HTTP/1.1\r\n"));
+
+        let blocked = l7_request(
+            relay.address,
+            "GET /debug_trace HTTP/1.1\r\nHost: node\r\n\r\n",
+        )
+        .await;
+        assert!(
+            blocked.starts_with("HTTP/1.1 403 Forbidden"),
+            "response: {blocked}"
+        );
+    }
+
+    fn l7_config(upstream: SocketAddr, extra: &str) -> Arc<Config> {
+        let text = format!(
+            r#"
+[limits]
+max_connections = 8
+max_connections_per_listener = 8
+max_outbound_connections = 2
+max_sessions = 16
+
+[policy]
+allow = ["127.0.0.1/32", "::1/128"]
+
+[[upstreams]]
+name = "node"
+address = "{upstream}"
+
+[[listeners]]
+name = "rpc"
+listen = "127.0.0.1:26657"
+upstream = "node"
+
+[listeners.l7]
+allow_methods = ["eth_call", "eth_blockNumber", "status"]
+{extra}
+"#
+        );
+        Arc::new(Config::parse(&text, Path::new("test.toml")).expect("L7 test configuration"))
+    }
+
+    async fn l7_request(address: SocketAddr, request: &str) -> String {
+        let mut stream = TcpStream::connect(address).await.expect("connect L7 relay");
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write request");
+        let mut response = Vec::new();
+        timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+            .await
+            .expect("L7 response timeout")
+            .expect("read L7 response");
+        String::from_utf8_lossy(&response).into_owned()
+    }
+
+    /// Accepts one request, reports it, and answers with a fixed response.
+    async fn spawn_http_upstream() -> (SocketAddr, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind HTTP upstream");
+        let address = listener.local_addr().expect("HTTP upstream address");
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept L7 request");
+            let request = read_http_request(&mut stream).await;
+            let _ = sender.send(request);
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                )
+                .await;
+            let _ = stream.shutdown().await;
+        });
+        (address, receiver)
+    }
+
+    async fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let head_end = loop {
+            let read = stream.read(&mut chunk).await.expect("read request");
+            assert!(read > 0, "upstream closed before the head");
+            request.extend_from_slice(&chunk[..read]);
+            if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break position + 4;
+            }
+        };
+        let head = std::str::from_utf8(&request[..head_end]).expect("request head");
+        let length = head
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length: "))
+            .map_or(0, |value| value.parse::<usize>().expect("content length"));
+        while request.len() < head_end + length {
+            let read = stream.read(&mut chunk).await.expect("read request body");
+            assert!(read > 0, "upstream closed before the body");
+            request.extend_from_slice(&chunk[..read]);
+        }
+        request
     }
 
     #[tokio::test]

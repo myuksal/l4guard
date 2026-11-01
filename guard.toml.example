@@ -85,3 +85,39 @@ listen = "127.0.0.1:31001"
 mode = "outbound"
 upstream = "peer-a"
 enabled = true
+
+# Optional HTTP/1.1 JSON-RPC inspection. Without `[listeners.l7]` the listener
+# relays raw bytes. With it, one request per connection is parsed, checked
+# against the method policy, and rebuilt before forwarding. `allow_methods`
+# fails closed, so list every method you intend to expose. L7 settings are
+# restart-required; see docs/l7.md.
+#
+# [[upstreams]]
+# name = "rpc-node"
+# address = "10.0.0.5:8545"
+#
+# [[listeners]]
+# name = "rpc-public"
+# listen = "0.0.0.0:8545"
+# mode = "inbound"
+# upstream = "rpc-node"
+#
+# [listeners.l7]
+# max_header_bytes = 16384
+# max_header_count = 64
+# header_timeout_ms = 5000
+# max_body_bytes = 1048576
+# body_timeout_ms = 10000
+# max_json_depth = 32
+# max_json_array = 256
+# max_batch = 32
+# allow_methods = ["eth_call", "eth_getLogs", "eth_blockNumber", "status"]
+# deny_methods = ["debug_traceCall"]
+#
+# [listeners.l7.expensive_methods.eth_call]
+# rate_per_second = 20
+# concurrent = 8
+#
+# [listeners.l7.expensive_methods.eth_getLogs]
+# rate_per_second = 10
+# concurrent = 4

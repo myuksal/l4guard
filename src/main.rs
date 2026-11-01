@@ -6,6 +6,7 @@
 //! without dropping the listeners.
 
 mod config;
+mod l7;
 mod observe;
 mod policy;
 mod relay;
@@ -95,6 +96,16 @@ async fn run() -> Result<(), String> {
     }
     result.map_err(|error| error.to_string())?;
     let snapshot = stats.snapshot();
+    let l7_rejected = snapshot.l7_rejected_malformed
+        + snapshot.l7_rejected_header
+        + snapshot.l7_rejected_body
+        + snapshot.l7_rejected_timeout
+        + snapshot.l7_rejected_method
+        + snapshot.l7_rejected_encoding
+        + snapshot.l7_rejected_upgrade
+        + snapshot.l7_rejected_json
+        + snapshot.l7_rejected_policy
+        + snapshot.l7_rejected_quota;
     info!(
         active_sessions = snapshot.active_sessions,
         accepted = snapshot.accepted,
@@ -111,6 +122,9 @@ async fn run() -> Result<(), String> {
         completed = snapshot.completed,
         bytes_to_upstream = snapshot.bytes_to_upstream,
         bytes_to_client = snapshot.bytes_to_client,
+        l7_requests = snapshot.l7_requests,
+        l7_forwarded = snapshot.l7_forwarded,
+        l7_rejected,
         policy_version = snapshot.policy_version,
         "shutdown complete"
     );
@@ -189,13 +203,25 @@ fn print_summary(config: &Config) {
         config.upstreams.len()
     );
     for listener in &config.listeners {
-        println!(
-            "  listener {} ({}) {} -> {}",
-            listener.name,
-            listener.mode.as_str(),
-            listener.listen,
-            listener.upstream
-        );
+        match &listener.l7 {
+            Some(l7) => println!(
+                "  listener {} ({}) {} -> {} l7 allow={} deny={} expensive={}",
+                listener.name,
+                listener.mode.as_str(),
+                listener.listen,
+                listener.upstream,
+                l7.allow_methods.len(),
+                l7.deny_methods.len(),
+                l7.expensive_methods.len()
+            ),
+            None => println!(
+                "  listener {} ({}) {} -> {}",
+                listener.name,
+                listener.mode.as_str(),
+                listener.listen,
+                listener.upstream
+            ),
+        }
     }
     for upstream in &config.upstreams {
         println!(

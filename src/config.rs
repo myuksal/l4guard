@@ -175,23 +175,33 @@ impl Config {
             return Some("upstreams".to_owned());
         }
 
-        let listeners: BTreeMap<&str, (SocketAddr, ListenerMode, &str)> = self
+        let listeners: BTreeMap<&str, (SocketAddr, ListenerMode, &str, &Option<L7>)> = self
             .listeners
             .iter()
             .map(|listener| {
                 (
                     listener.name.as_str(),
-                    (listener.listen, listener.mode, listener.upstream.as_str()),
+                    (
+                        listener.listen,
+                        listener.mode,
+                        listener.upstream.as_str(),
+                        &listener.l7,
+                    ),
                 )
             })
             .collect();
-        let next_listeners: BTreeMap<&str, (SocketAddr, ListenerMode, &str)> = next
+        let next_listeners: BTreeMap<&str, (SocketAddr, ListenerMode, &str, &Option<L7>)> = next
             .listeners
             .iter()
             .map(|listener| {
                 (
                     listener.name.as_str(),
-                    (listener.listen, listener.mode, listener.upstream.as_str()),
+                    (
+                        listener.listen,
+                        listener.mode,
+                        listener.upstream.as_str(),
+                        &listener.l7,
+                    ),
                 )
             })
             .collect();
@@ -281,6 +291,9 @@ impl Config {
                     format!("listeners[{index}].upstream"),
                     format!("unknown upstream \"{}\"", listener.upstream),
                 ));
+            }
+            if let Some(l7) = &listener.l7 {
+                l7.validate(source, &format!("listeners[{index}].l7"))?;
             }
         }
         Ok(())
@@ -537,6 +550,14 @@ pub struct Listener {
     pub mode: ListenerMode,
     /// Name of the upstream that accepted connections are relayed to.
     pub upstream: String,
+    /// Optional HTTP/1.1 JSON-RPC inspection.
+    ///
+    /// When present, the listener parses every accepted connection as one
+    /// HTTP/1.1 request, applies the method policy, and forwards a newly
+    /// constructed request to the upstream. When absent, the listener relays
+    /// raw bytes.
+    #[serde(default)]
+    pub l7: Option<L7>,
     /// Whether the listener accepts connections.
     ///
     /// A reload can stop or resume one listener by changing this value. A
@@ -549,6 +570,226 @@ pub struct Listener {
 /// Default for [`Listener::enabled`]: listeners are active unless disabled.
 const fn listener_enabled() -> bool {
     true
+}
+
+/// HTTP/1.1 JSON-RPC inspection settings for one listener.
+///
+/// The listener buffers one request at a time, so every bound here is also a
+/// per-session memory bound. Method policy fails closed: an empty
+/// `allow_methods` list denies every request. See `docs/l7.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct L7 {
+    /// Maximum bytes accepted before the request head ends.
+    pub max_header_bytes: usize,
+    /// Maximum number of request headers.
+    pub max_header_count: usize,
+    /// Time allowed to receive the request head, in milliseconds.
+    pub header_timeout_ms: u64,
+    /// Maximum decoded body bytes accepted for one request.
+    pub max_body_bytes: usize,
+    /// Time allowed to receive the whole body, in milliseconds.
+    pub body_timeout_ms: u64,
+    /// Maximum JSON nesting depth, counting the request object as one.
+    pub max_json_depth: usize,
+    /// Maximum elements in any JSON array and entries in any JSON object.
+    pub max_json_array: usize,
+    /// Maximum JSON-RPC calls in one batch.
+    pub max_batch: usize,
+    /// Methods that may run. Empty means every method is denied.
+    pub allow_methods: Vec<String>,
+    /// Methods that are always denied, even when allowed.
+    pub deny_methods: Vec<String>,
+    /// Per-method rate and concurrency limits for expensive methods.
+    pub expensive_methods: BTreeMap<String, MethodLimit>,
+}
+
+impl Default for L7 {
+    fn default() -> Self {
+        Self {
+            max_header_bytes: 16 * 1024,
+            max_header_count: 64,
+            header_timeout_ms: 5_000,
+            max_body_bytes: 1024 * 1024,
+            body_timeout_ms: 10_000,
+            max_json_depth: 32,
+            max_json_array: 256,
+            max_batch: 32,
+            allow_methods: Vec::new(),
+            deny_methods: Vec::new(),
+            expensive_methods: BTreeMap::new(),
+        }
+    }
+}
+
+impl L7 {
+    fn validate(&self, source: &Path, key: &str) -> Result<(), Error> {
+        require_positive(
+            source,
+            &format!("{key}.max_header_bytes"),
+            &self.max_header_bytes,
+        )?;
+        require_positive(
+            source,
+            &format!("{key}.max_header_count"),
+            &self.max_header_count,
+        )?;
+        require_positive(
+            source,
+            &format!("{key}.header_timeout_ms"),
+            &self.header_timeout_ms,
+        )?;
+        require_positive(
+            source,
+            &format!("{key}.max_body_bytes"),
+            &self.max_body_bytes,
+        )?;
+        require_positive(
+            source,
+            &format!("{key}.body_timeout_ms"),
+            &self.body_timeout_ms,
+        )?;
+        require_positive(
+            source,
+            &format!("{key}.max_json_depth"),
+            &self.max_json_depth,
+        )?;
+        require_positive(
+            source,
+            &format!("{key}.max_json_array"),
+            &self.max_json_array,
+        )?;
+        require_positive(source, &format!("{key}.max_batch"), &self.max_batch)?;
+
+        require_at_most(
+            source,
+            &format!("{key}.max_header_bytes"),
+            self.max_header_bytes,
+            MAX_L7_HEADER_BYTES,
+        )?;
+        require_at_most(
+            source,
+            &format!("{key}.max_header_count"),
+            self.max_header_count,
+            MAX_L7_HEADER_COUNT,
+        )?;
+        require_at_most(
+            source,
+            &format!("{key}.max_body_bytes"),
+            self.max_body_bytes,
+            MAX_L7_BODY_BYTES,
+        )?;
+        require_at_most(
+            source,
+            &format!("{key}.max_json_depth"),
+            self.max_json_depth,
+            MAX_L7_JSON_DEPTH,
+        )?;
+        require_at_most(
+            source,
+            &format!("{key}.max_json_array"),
+            self.max_json_array,
+            MAX_L7_JSON_ARRAY,
+        )?;
+        if self.max_batch > self.max_json_array {
+            return Err(Error::invalid(
+                source,
+                format!("{key}.max_batch"),
+                "must not exceed max_json_array",
+            ));
+        }
+
+        validate_method_list(source, &format!("{key}.allow_methods"), &self.allow_methods)?;
+        validate_method_list(source, &format!("{key}.deny_methods"), &self.deny_methods)?;
+        for (method, limit) in &self.expensive_methods {
+            validate_method_name(source, &format!("{key}.expensive_methods"), method)?;
+            limit.validate(source, &format!("{key}.expensive_methods.{method}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// Largest request head the guard accepts, regardless of configuration.
+const MAX_L7_HEADER_BYTES: usize = 1024 * 1024;
+
+/// Largest header count the guard accepts, regardless of configuration.
+const MAX_L7_HEADER_COUNT: usize = 256;
+
+/// Largest buffered body the guard accepts, regardless of configuration.
+const MAX_L7_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Deepest JSON nesting the guard accepts, matching the parser's own limit.
+const MAX_L7_JSON_DEPTH: usize = 128;
+
+/// Largest JSON array or object the guard accepts, regardless of configuration.
+const MAX_L7_JSON_ARRAY: usize = 65_536;
+
+/// Rate and concurrency limit for one expensive JSON-RPC method.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MethodLimit {
+    /// Sustained requests per second for this method.
+    pub rate_per_second: u32,
+    /// Requests of this method that may run at the same time.
+    pub concurrent: usize,
+}
+
+impl MethodLimit {
+    fn validate(&self, source: &Path, key: &str) -> Result<(), Error> {
+        require_positive(
+            source,
+            &format!("{key}.rate_per_second"),
+            &self.rate_per_second,
+        )?;
+        require_positive(source, &format!("{key}.concurrent"), &self.concurrent)
+    }
+}
+
+fn validate_method_list(source: &Path, key: &str, methods: &[String]) -> Result<(), Error> {
+    let mut seen = HashSet::with_capacity(methods.len());
+    for method in methods {
+        validate_method_name(source, key, method)?;
+        if !seen.insert(method.as_str()) {
+            return Err(Error::invalid(
+                source,
+                key,
+                format!("duplicate method \"{method}\""),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_method_name(source: &Path, key: &str, method: &str) -> Result<(), Error> {
+    if method.is_empty() {
+        return Err(Error::invalid(source, key, "method name must not be empty"));
+    }
+    if method.len() > 128 {
+        return Err(Error::invalid(
+            source,
+            key,
+            "method name must not exceed 128 bytes",
+        ));
+    }
+    if !method.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(Error::invalid(
+            source,
+            key,
+            "method name must contain printable ASCII characters only",
+        ));
+    }
+    Ok(())
+}
+
+fn require_at_most(source: &Path, key: &str, value: usize, maximum: usize) -> Result<(), Error> {
+    if value > maximum {
+        return Err(Error::invalid(
+            source,
+            key,
+            format!("must not exceed {maximum}"),
+        ));
+    }
+    Ok(())
 }
 
 /// Direction a listener serves.
@@ -866,6 +1107,7 @@ upstream = "node"
         assert_eq!(config.listeners.len(), 1);
         assert_eq!(config.listeners[0].mode, ListenerMode::Inbound);
         assert_eq!(config.listeners[0].upstream, "node");
+        assert!(config.listeners[0].l7.is_none());
         assert!(config.listeners[0].enabled);
     }
 
@@ -1172,6 +1414,148 @@ listen = "127.0.0.1:26657"
         let message = error_text(&text);
 
         assert!(!message.contains('\n'), "error must stay on one line");
+    }
+
+    #[test]
+    fn parses_l7_listener_settings() {
+        let text = r#"
+[[upstreams]]
+name = "node"
+address = "127.0.0.1:26657"
+
+[[listeners]]
+name = "rpc"
+listen = "127.0.0.1:26657"
+upstream = "node"
+
+[listeners.l7]
+max_header_bytes = 8192
+max_header_count = 32
+header_timeout_ms = 2000
+max_body_bytes = 65536
+body_timeout_ms = 3000
+max_json_depth = 16
+max_json_array = 128
+max_batch = 8
+allow_methods = ["eth_call", "eth_getLogs"]
+deny_methods = ["debug_traceCall"]
+
+[listeners.l7.expensive_methods.eth_call]
+rate_per_second = 20
+concurrent = 8
+"#;
+
+        let config = parse(text).expect("L7 configuration must be valid");
+        let l7 = config.listeners[0].l7.as_ref().expect("l7 settings");
+
+        assert_eq!(l7.max_header_bytes, 8192);
+        assert_eq!(l7.max_header_count, 32);
+        assert_eq!(l7.header_timeout_ms, 2000);
+        assert_eq!(l7.max_body_bytes, 65_536);
+        assert_eq!(l7.body_timeout_ms, 3000);
+        assert_eq!(l7.max_json_depth, 16);
+        assert_eq!(l7.max_json_array, 128);
+        assert_eq!(l7.max_batch, 8);
+        assert_eq!(l7.allow_methods, vec!["eth_call", "eth_getLogs"]);
+        assert_eq!(l7.deny_methods, vec!["debug_traceCall"]);
+        let expensive = l7.expensive_methods.get("eth_call").expect("limit");
+        assert_eq!(expensive.rate_per_second, 20);
+        assert_eq!(expensive.concurrent, 8);
+    }
+
+    #[test]
+    fn l7_defaults_deny_every_method() {
+        let text = r#"
+[[upstreams]]
+name = "node"
+address = "127.0.0.1:26657"
+
+[[listeners]]
+name = "rpc"
+listen = "127.0.0.1:26657"
+upstream = "node"
+
+[listeners.l7]
+"#;
+
+        let config = parse(text).expect("default L7 configuration must be valid");
+        let l7 = config.listeners[0].l7.as_ref().expect("l7 settings");
+
+        assert_eq!(l7.allow_methods, Vec::<String>::new());
+        assert_eq!(l7.max_header_bytes, 16 * 1024);
+        assert_eq!(l7.max_body_bytes, 1024 * 1024);
+        assert_eq!(l7.max_batch, 32);
+    }
+
+    #[test]
+    fn rejects_zero_l7_limits() {
+        let text = format!("{MINIMAL}\n[listeners.l7]\nmax_body_bytes = 0\n");
+
+        let message = error_text(&text);
+
+        assert_contains(&message, "listeners[0].l7.max_body_bytes");
+        assert_contains(&message, "greater than zero");
+    }
+
+    #[test]
+    fn rejects_l7_batch_above_array_limit() {
+        let text = format!("{MINIMAL}\n[listeners.l7]\nmax_json_array = 4\nmax_batch = 5\n");
+
+        let message = error_text(&text);
+
+        assert_contains(&message, "listeners[0].l7.max_batch");
+        assert_contains(&message, "max_json_array");
+    }
+
+    #[test]
+    fn rejects_invalid_l7_method_names() {
+        let text = format!("{MINIMAL}\n[listeners.l7]\nallow_methods = [\"eth call\"]\n");
+
+        let message = error_text(&text);
+
+        assert_contains(&message, "listeners[0].l7.allow_methods");
+        assert_contains(&message, "printable ASCII");
+    }
+
+    #[test]
+    fn rejects_duplicate_l7_allow_methods() {
+        let text =
+            format!("{MINIMAL}\n[listeners.l7]\nallow_methods = [\"eth_call\", \"eth_call\"]\n");
+
+        let message = error_text(&text);
+
+        assert_contains(&message, "listeners[0].l7.allow_methods");
+        assert_contains(&message, "duplicate method");
+    }
+
+    #[test]
+    fn rejects_incomplete_expensive_method_limit() {
+        let text = format!(
+            "{MINIMAL}\n[listeners.l7]\nallow_methods = [\"eth_call\"]\n\n[listeners.l7.expensive_methods.eth_call]\nrate_per_second = 10\n"
+        );
+
+        let message = error_text(&text);
+
+        assert_contains(
+            &message,
+            "listeners[0].l7.expensive_methods.eth_call.concurrent",
+        );
+        assert_contains(&message, "greater than zero");
+    }
+
+    #[test]
+    fn reload_rejects_l7_changes() {
+        let base = parse(MINIMAL).expect("minimal configuration");
+        let mut next = base.clone();
+        next.listeners[0].l7 = Some(L7 {
+            allow_methods: vec!["eth_call".to_owned()],
+            ..L7::default()
+        });
+
+        assert_eq!(
+            base.non_reloadable_change(&next).as_deref(),
+            Some("listeners.public")
+        );
     }
 
     #[test]

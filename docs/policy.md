@@ -39,6 +39,7 @@ kubectl exec deploy/l4guard -- kill -HUP 1
 정상 설정이 유지된다. 순차 재배포로 반영한다.
 
 - `listeners[].name`, `listen`, `mode`, `upstream`
+- `listeners[].l7` (HTTP L7 검사 설정 전체)
 - `upstreams`
 - `limits.max_connections`, `max_connections_per_listener`,
   `max_outbound_connections`

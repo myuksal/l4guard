@@ -96,8 +96,52 @@ impl PolicyVersion {
         for (name, enabled) in listeners {
             hash_part(&mut hash, &format!("listener={name}:{}", u8::from(enabled)));
         }
+
+        let mut l7_listeners: Vec<&config::Listener> = config
+            .listeners
+            .iter()
+            .filter(|listener| listener.l7.is_some())
+            .collect();
+        l7_listeners.sort_unstable_by_key(|listener| listener.name.as_str());
+        for listener in l7_listeners {
+            hash_part(
+                &mut hash,
+                &format!("l7={}:{}", listener.name, l7_digest(listener.l7.as_ref())),
+            );
+        }
         Self(hash)
     }
+}
+
+/// Returns a stable description of the L7 settings that affect admission.
+fn l7_digest(l7: Option<&config::L7>) -> String {
+    let Some(l7) = l7 else {
+        return "none".to_owned();
+    };
+    let mut allow = l7.allow_methods.clone();
+    allow.sort_unstable();
+    let mut deny = l7.deny_methods.clone();
+    deny.sort_unstable();
+    let expensive = l7
+        .expensive_methods
+        .iter()
+        .map(|(method, limit)| format!("{method}={}/{}", limit.rate_per_second, limit.concurrent))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "h={},{},{};b={},{};j={},{},{};a={};d={};e={}",
+        l7.max_header_bytes,
+        l7.max_header_count,
+        l7.header_timeout_ms,
+        l7.max_body_bytes,
+        l7.body_timeout_ms,
+        l7.max_json_depth,
+        l7.max_json_array,
+        l7.max_batch,
+        allow.join(","),
+        deny.join(","),
+        expensive,
+    )
 }
 
 impl fmt::Display for PolicyVersion {
@@ -134,6 +178,15 @@ impl AddressPolicy {
             deny: config.deny.clone(),
             emergency_block: config.emergency_block,
         }
+    }
+
+    /// Returns whether the emergency block is active.
+    ///
+    /// An active emergency block rejects every address, including addresses
+    /// that an allow entry matches.
+    #[must_use]
+    pub const fn emergency_block(&self) -> bool {
+        self.emergency_block
     }
 
     /// Returns whether `address` may open a session.
@@ -185,6 +238,12 @@ impl RuntimePolicy {
     #[must_use]
     pub fn allows(&self, address: IpAddr) -> bool {
         self.address.allows(address)
+    }
+
+    /// Returns whether the emergency block is active.
+    #[must_use]
+    pub const fn emergency_block(&self) -> bool {
+        self.address.emergency_block()
     }
 
     /// Returns the concurrent session limit for one source address.
@@ -463,6 +522,7 @@ mod tests {
             listen: "127.0.0.1:26657".parse().expect("socket address"),
             mode: config::ListenerMode::Inbound,
             upstream: "node".to_owned(),
+            l7: None,
             enabled,
         };
         let first = PolicyStore::new(&config_with(

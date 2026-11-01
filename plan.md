@@ -262,6 +262,8 @@ Hot reload는 ACL·quota·긴급 중지 정책에 한정하고, listen 주소·u
 
 구현(E5)에서는 로그를 `observe.log_rate_limit_per_second`와 `observe.log_queue_capacity`로 제한하고, 초과분은 버린 뒤 초당 1회 요약 로그로 대체합니다. 로그 이벤트는 `listener`·`peer`·`reason`·`version`·`session` 필드로 구조화합니다. 지표는 활성 세션, 거절 사유별 카운터, 송수신 바이트, upstream 실패, 정책 버전으로 정의하고, 로그와 선택적 `observe.metrics_listen`의 `GET /metrics`(Prometheus text)로 노출합니다. 설정·정책 전체 덤프는 남기지 않습니다. 상세 내용은 `docs/observe.md`에 기록합니다.
 
+구현(E6)에서는 listener별 선택 설정 `listeners[].l7`로 HTTP/1.1 JSON-RPC 검사를 켭니다. 검증된 `httparse`로 요청 head를, `serde_json`의 제한 visitor로 body를 파싱합니다. header 크기·개수·수신 시간, body 누적 크기·수신 시간, JSON 깊이·배열 크기·중복 key, batch 개수를 각각 제한합니다. `GET` URI 호출과 `POST` body를 모두 검사하고, 비어 있지 않은 POST 경로는 경로 method까지 함께 검사합니다. method는 escape를 디코딩한 뒤 allowlist와 정확히 비교하며 substring 검색은 사용하지 않습니다. `CONNECT`·`Upgrade`·압축 body·`chunked` 이외 transfer coding은 거부합니다. 비싼 method는 전송 전에 요청률과 동시 실행량을 차감하고, 동시 실행 permit은 응답이 끝날 때까지 유지합니다. 통과한 요청만 새 요청으로 재생성해 `Connection: close`로 전달하며 자동 재시도는 하지 않습니다. WebSocket JSON-RPC는 명시적으로 미지원입니다. L7 설정은 재시작 대상이고, `policy.emergency_block`만 reload로 즉시 반영됩니다. 상세 내용은 `docs/l7.md`에 기록합니다.
+
 또한 복제본별 quota라는 점을 명시해야 합니다. Guard 두 개에 각각 256개 제한을 두면 backend 방향 총량은 최대 512개가 될 수 있습니다. 초기에는 분산 카운터를 추가하기보다 복제본 수까지 포함해 예산을 정합니다.
 
 ---

@@ -3,10 +3,10 @@
 L4 TCP guard proxy for blockchain nodes. Design: `plan.md`.
 
 ## Stack
-Rust 2024 · 1.85 · single crate · tokio, serde, toml, ipnet, tracing
+Rust 2024 · 1.85 · single crate · tokio, serde, toml, ipnet, tracing, httparse, serde_json
 
 ## Layout
-`src/main.rs` entry · `config` · `policy` · `relay` · `sessions` · `observe` · `rpc`
+`src/main.rs` entry · `config` · `policy` · `relay` · `sessions` · `observe` · `l7`
 Tests: inline `#[cfg(test)]`, integration in `tests/`
 
 ## Commands
