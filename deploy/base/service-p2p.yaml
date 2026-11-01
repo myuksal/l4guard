@@ -1,0 +1,39 @@
+# Public P2P endpoint. One public endpoint must map to one backend Node ID.
+#
+# externalTrafficPolicy: Local keeps the client source address for the Guard
+# address policy and keeps LB traffic on nodes that run a Guard pod. Combined
+# with the Guard-only node pool, this prevents the LB from targeting backend
+# workers.
+#
+# Provider-specific target restriction examples:
+#   AWS Load Balancer Controller:
+#     service.beta.kubernetes.io/aws-load-balancer-target-node-labels: l4guard.io/role=guard
+#   GCP:
+#     use a zonal NEG or an instance group that contains only Guard workers.
+apiVersion: v1
+kind: Service
+metadata:
+  name: l4guard-p2p
+  namespace: l4guard
+  labels:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/component: p2p
+    app.kubernetes.io/part-of: l4guard
+  annotations:
+    l4guard.io/backend-node-id: cometbft-node-a
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  sessionAffinity: None
+  selector:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/component: p2p
+  ports:
+    - name: p2p
+      protocol: TCP
+      port: 26656
+      targetPort: p2p
+  # Narrow this to the peer networks that should reach the public endpoint.
+  # The Guard address policy remains the authoritative peer filter.
+  # loadBalancerSourceRanges:
+  #   - 0.0.0.0/0

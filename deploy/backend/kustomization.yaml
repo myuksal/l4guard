@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Reference backend access policy. Apply with:
+#   kubectl apply -k deploy/backend
+#
+# If the backend already exists in another namespace, keep only the
+# NetworkPolicy and change its namespace and pod labels to match.
+namespace: blockchain
+
+resources:
+  - namespace.yaml
+  - service.yaml
+  - networkpolicy.yaml

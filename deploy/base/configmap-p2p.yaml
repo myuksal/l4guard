@@ -1,0 +1,56 @@
+# Guard configuration for the public P2P listener. One public P2P endpoint
+# must map to exactly one backend Node ID; do not point this ConfigMap at
+# multiple backend identities.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: l4guard-p2p-config
+  namespace: l4guard
+  labels:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/component: p2p
+    app.kubernetes.io/part-of: l4guard
+data:
+  guard.toml: |
+    [limits]
+    # Per-replica budget. With two Guard replicas the backend can see up to
+    # 2 x max_connections sessions; size the backend accordingly.
+    max_connections = 256
+    max_connections_per_listener = 256
+    max_outbound_connections = 0
+    max_connections_per_ip = 8
+    max_new_connections_per_second = 50
+    new_connection_burst = 100
+    connect_timeout_ms = 5000
+    # Keep this below the Deployment's terminationGracePeriodSeconds so the
+    # process can finish draining before Kubernetes sends SIGKILL.
+    drain_timeout_ms = 15000
+    max_sessions = 512
+    max_ip_entries = 4096
+    ip_entry_ttl_seconds = 600
+    bandwidth_limit_bytes_per_second = 0
+
+    [policy]
+    # The Guard address policy is the authoritative peer filter. Narrow these
+    # ranges to the peer networks you actually serve.
+    allow = ["0.0.0.0/0", "::/0"]
+    deny = []
+    emergency_block = false
+
+    [observe]
+    level = "info"
+    log_rate_limit_per_second = 100
+    log_queue_capacity = 1024
+    # Serves /metrics, /healthz, and /readyz to the monitoring namespace.
+    metrics_listen = "0.0.0.0:9100"
+
+    [[upstreams]]
+    name = "cometbft-p2p"
+    address = "blockchain-node.blockchain.svc.cluster.local:26656"
+
+    [[listeners]]
+    name = "p2p-public"
+    listen = "0.0.0.0:26656"
+    mode = "inbound"
+    upstream = "cometbft-p2p"
+    enabled = true

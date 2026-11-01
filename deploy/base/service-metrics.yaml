@@ -1,0 +1,19 @@
+# Metrics, liveness, and readiness endpoint for the monitoring stack.
+# The NetworkPolicy allows this port only from the monitoring namespace.
+apiVersion: v1
+kind: Service
+metadata:
+  name: l4guard-metrics
+  namespace: l4guard
+  labels:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/part-of: l4guard
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: l4guard
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: 9100
+      targetPort: metrics

@@ -2470,6 +2470,11 @@ allow_methods = ["eth_call", "eth_blockNumber", "status"]
         assert!(response.contains("l4guard_policy_version "));
         assert!(response.contains("l4guard_rejected_total{reason=\"policy\"} 0"));
 
+        let health = http_get(address, "/healthz").await;
+        assert!(health.contains("HTTP/1.1 200 OK"));
+        let ready = http_get(address, "/readyz").await;
+        assert!(ready.contains("HTTP/1.1 200 OK"));
+
         let missing = http_get(address, "/config").await;
         assert!(missing.contains("HTTP/1.1 404 Not Found"));
 

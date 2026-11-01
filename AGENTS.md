@@ -7,10 +7,12 @@ Rust 2024 · 1.85 · single crate · tokio, serde, toml, ipnet, tracing, httpars
 
 ## Layout
 `src/main.rs` entry · `config` · `policy` · `relay` · `sessions` · `observe` · `l7`
+Deploy: `Dockerfile` · `deploy/base` (Guard) · `deploy/backend` (access policy)
 Tests: inline `#[cfg(test)]`, integration in `tests/`
 
 ## Commands
 `make build|release|run|run-release|clean`
+`make docker-build|manifests|check`
 `make run RUN_ARGS="--config guard.toml"`
 Check: `cargo fmt --check` · `cargo clippy --all-targets --all-features -- -D warnings`
 

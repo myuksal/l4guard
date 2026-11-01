@@ -1,0 +1,26 @@
+# Public HTTP RPC endpoint. The Guard L7 listener inspects every request.
+apiVersion: v1
+kind: Service
+metadata:
+  name: l4guard-rpc
+  namespace: l4guard
+  labels:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/component: rpc
+    app.kubernetes.io/part-of: l4guard
+  annotations:
+    l4guard.io/backend-node-id: cometbft-node-a
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  sessionAffinity: None
+  selector:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/component: rpc
+  ports:
+    - name: rpc
+      protocol: TCP
+      port: 26657
+      targetPort: rpc
+  # loadBalancerSourceRanges:
+  #   - 0.0.0.0/0

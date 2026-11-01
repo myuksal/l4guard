@@ -351,6 +351,10 @@ async fn serve_metrics(mut stream: TcpStream, stats: &StatsHandle) -> io::Result
             "text/plain; version=0.0.4",
             render_metrics(&stats.snapshot()),
         ),
+        // Liveness and readiness are served by the same task as metrics. They
+        // deliberately do not touch the backend: a Guard is ready when its
+        // listeners are bound and this task is running.
+        Some("/healthz" | "/readyz") => ("200 OK", "text/plain", "ok\n".to_owned()),
         _ => ("404 Not Found", "text/plain", "not found\n".to_owned()),
     };
     let response = format!(

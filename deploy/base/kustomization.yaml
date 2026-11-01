@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Reference Guard deployment. Apply with:
+#   kubectl apply -k deploy/base
+#
+# The backend Service and NetworkPolicy live in deploy/backend and are applied
+# separately so they can be adapted to an existing backend namespace.
+namespace: l4guard
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - configmap-p2p.yaml
+  - configmap-rpc.yaml
+  - configmap-egress.yaml
+  - deployment-p2p.yaml
+  - deployment-rpc.yaml
+  - deployment-egress.yaml
+  - service-p2p.yaml
+  - service-rpc.yaml
+  - service-private.yaml
+  - service-metrics.yaml
+  - networkpolicy.yaml
+  - pdb-p2p.yaml
+  - pdb-rpc.yaml
+  - pdb-egress.yaml

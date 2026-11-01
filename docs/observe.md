@@ -99,7 +99,10 @@ metrics_listen = "127.0.0.1:9100"
 curl -s http://127.0.0.1:9100/metrics
 ```
 
-- 경로는 `GET /metrics` 하나다. 다른 경로와 메서드는 `404`를 반환한다.
+- 지표 경로는 `GET /metrics` 하나다. 그 밖의 경로와 메서드는 `404`를 반환한다.
+- 같은 endpoint가 `GET /healthz`와 `GET /readyz`에 `200 ok`를 반환한다.
+  두 경로는 backend 상태를 확인하지 않으므로 Guard와 backend의 readiness가
+  서로를 기다리지 않는다. Kubernetes probe는 이 경로를 사용한다.
 - 응답은 Prometheus text 형식이며, 지표 정의 외의 정보는 포함하지 않는다.
 - 동시에 처리하는 요청은 8개로 제한하고, 요청은 1 KiB·2초 안에서만 읽는다.
   상한을 넘는 연결은 대기시키지 않고 닫는다.

@@ -264,6 +264,8 @@ Hot reload는 ACL·quota·긴급 중지 정책에 한정하고, listen 주소·u
 
 구현(E6)에서는 listener별 선택 설정 `listeners[].l7`로 HTTP/1.1 JSON-RPC 검사를 켭니다. 검증된 `httparse`로 요청 head를, `serde_json`의 제한 visitor로 body를 파싱합니다. header 크기·개수·수신 시간, body 누적 크기·수신 시간, JSON 깊이·배열 크기·중복 key, batch 개수를 각각 제한합니다. `GET` URI 호출과 `POST` body를 모두 검사하고, 비어 있지 않은 POST 경로는 경로 method까지 함께 검사합니다. method는 escape를 디코딩한 뒤 allowlist와 정확히 비교하며 substring 검색은 사용하지 않습니다. `CONNECT`·`Upgrade`·압축 body·`chunked` 이외 transfer coding은 거부합니다. 비싼 method는 전송 전에 요청률과 동시 실행량을 차감하고, 동시 실행 permit은 응답이 끝날 때까지 유지합니다. 통과한 요청만 새 요청으로 재생성해 `Connection: close`로 전달하며 자동 재시도는 하지 않습니다. WebSocket JSON-RPC는 명시적으로 미지원입니다. L7 설정은 재시작 대상이고, `policy.emergency_block`만 reload로 즉시 반영됩니다. 상세 내용은 `docs/l7.md`에 기록합니다.
 
+구현(E7)에서는 `Dockerfile`로 non-root·read-only rootfs release 이미지를 만들고, `deploy/base`에 P2P/RPC 리스너별 Deployment·LoadBalancer Service·사설 ClusterIP Service·ConfigMap·NetworkPolicy·PDB를, `deploy/backend`에 backend ClusterIP Service와 deny-by-default NetworkPolicy를 둡니다. Rolling update는 `maxSurge: 0`, `maxUnavailable: 1`로 순차 교체하고, `preStop` 지연과 `terminationGracePeriodSeconds`를 drain 시간보다 크게 둡니다. 공개 LB는 Guard 전용 워커만 대상으로 하며 `externalTrafficPolicy: Local`로 source IP를 유지합니다. backend Service는 ClusterIP로 고정해 Guard 장애 시 직통 우회 경로가 열리지 않게 합니다. Guard는 `observe.metrics_listen`에서 `/healthz`·`/readyz`를 제공하고 probe는 backend를 기다리지 않습니다. 초기 자원 예산은 CPU 100m/1, memory 64MiB/256MiB이며 cgroup·FD·socket memory·conntrack 측정 절차를 문서화합니다. 하나의 공개 P2P endpoint는 하나의 backend Node ID에 대응하도록 annotation과 점검표로 고정합니다. 상세 내용은 `docs/deploy.md`에 기록합니다.
+
 또한 복제본별 quota라는 점을 명시해야 합니다. Guard 두 개에 각각 256개 제한을 두면 backend 방향 총량은 최대 512개가 될 수 있습니다. 초기에는 분산 카운터를 추가하기보다 복제본 수까지 포함해 예산을 정합니다.
 
 ---

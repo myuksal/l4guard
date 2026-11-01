@@ -22,13 +22,14 @@ const USAGE: &str = "\
 usage: l4guard --config <path>
 
 options:
-  -c, --config <path>  configuration file to load
-  -h, --help           print this help
-  -V, --version        print the version
+  -c, --config <path>        configuration file to load
+      --check-config <path>  validate a configuration file and exit
+  -h, --help                 print this help
+  -V, --version              print the version
 
 signals:
-  SIGHUP               reload policy, quotas, and listener state
-  SIGINT, SIGTERM      shut down after draining active sessions";
+  SIGHUP                     reload policy, quotas, and listener state
+  SIGINT, SIGTERM            shut down after draining active sessions";
 
 fn main() -> ExitCode {
     match run() {
@@ -54,6 +55,12 @@ async fn run() -> Result<(), String> {
                     .next()
                     .ok_or_else(|| format!("--config requires a path\n{USAGE}"))?;
                 config_path = Some(path);
+            }
+            "--check-config" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| format!("--check-config requires a path\n{USAGE}"))?;
+                return check_config(&path);
             }
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -195,6 +202,20 @@ fn spawn_reload_task(
     })
 }
 
+/// Validates one configuration file and prints a one-line summary.
+///
+/// This backs `--check-config` and is useful for deployment preflight checks.
+/// It does not bind sockets or start the relay.
+fn check_config(path: &str) -> Result<(), String> {
+    let config = Config::load(path).map_err(|error| error.to_string())?;
+    println!(
+        "configuration valid: {} listener(s), {} upstream(s)",
+        config.listeners.len(),
+        config.upstreams.len()
+    );
+    Ok(())
+}
+
 fn print_summary(config: &Config) {
     println!(
         "l4guard {}: loaded {} listener(s), {} upstream(s)",
@@ -264,5 +285,46 @@ fn print_summary(config: &Config) {
             config.observe.log_rate_limit_per_second,
             config.observe.log_queue_capacity
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MINIMAL: &str = r#"
+[[upstreams]]
+name = "node"
+address = "127.0.0.1:26656"
+
+[[listeners]]
+name = "public"
+listen = "127.0.0.1:26657"
+upstream = "node"
+"#;
+
+    #[test]
+    fn check_config_accepts_a_valid_document() {
+        let path =
+            std::env::temp_dir().join(format!("l4guard-check-{}-valid.toml", std::process::id()));
+        std::fs::write(&path, MINIMAL).expect("write test configuration");
+
+        let result = check_config(path.to_str().expect("utf-8 path"));
+
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok(), "valid configuration must be accepted");
+    }
+
+    #[test]
+    fn check_config_rejects_an_invalid_document() {
+        let path =
+            std::env::temp_dir().join(format!("l4guard-check-{}-invalid.toml", std::process::id()));
+        std::fs::write(&path, "[limits]\nmax_connections = 0\n")
+            .expect("write invalid configuration");
+
+        let result = check_config(path.to_str().expect("utf-8 path"));
+
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_err(), "invalid configuration must be rejected");
     }
 }

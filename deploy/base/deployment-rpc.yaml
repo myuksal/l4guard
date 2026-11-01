@@ -1,0 +1,133 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: l4guard-rpc
+  namespace: l4guard
+  labels:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/component: rpc
+    app.kubernetes.io/part-of: l4guard
+  annotations:
+    l4guard.io/backend-node-id: cometbft-node-a
+    l4guard.io/public-endpoint: rpc
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  minReadySeconds: 5
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: l4guard
+      app.kubernetes.io/component: rpc
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: l4guard
+        app.kubernetes.io/component: rpc
+        app.kubernetes.io/part-of: l4guard
+    spec:
+      serviceAccountName: l4guard
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      nodeSelector:
+        l4guard.io/role: guard
+      tolerations:
+        - key: l4guard.io/guard
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: l4guard
+                  app.kubernetes.io/component: rpc
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: l4guard
+          image: ghcr.io/example/l4guard:0.1.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /etc/l4guard/guard.toml
+          ports:
+            - name: rpc
+              containerPort: 26657
+              protocol: TCP
+            - name: metrics
+              containerPort: 9100
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          startupProbe:
+            exec:
+              command:
+                - /usr/bin/curl
+                - --fail
+                - --silent
+                - --show-error
+                - http://127.0.0.1:9100/healthz
+            periodSeconds: 1
+            timeoutSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command:
+                - /usr/bin/curl
+                - --fail
+                - --silent
+                - --show-error
+                - http://127.0.0.1:9100/readyz
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - /usr/bin/curl
+                - --fail
+                - --silent
+                - --show-error
+                - http://127.0.0.1:9100/healthz
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/l4guard
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: l4guard-rpc-config
+            items:
+              - key: guard.toml
+                path: guard.toml

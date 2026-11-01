@@ -1,0 +1,83 @@
+# Guard is the only workload allowed to reach the backend node. The public
+# ports accept traffic from the LB, and the Guard address policy is the
+# authoritative peer filter. The private ports accept only the backend.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: l4guard
+  namespace: l4guard
+  labels:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/part-of: l4guard
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: l4guard
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        - ipBlock:
+            cidr: ::/0
+      ports:
+        - protocol: TCP
+          port: 26656
+        - protocol: TCP
+          port: 26657
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: blockchain
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: blockchain-node
+      ports:
+        - protocol: TCP
+          port: 31001
+        - protocol: TCP
+          port: 31002
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9100
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: blockchain
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: blockchain-node
+      ports:
+        - protocol: TCP
+          port: 26656
+        - protocol: TCP
+          port: 26657
+    # Fixed P2P peers and state-sync RPC providers. The Guard configuration is
+    # the authority for which destinations are used; narrow these rules to the
+    # peer and provider CIDRs when they are known.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        - ipBlock:
+            cidr: ::/0
+      ports:
+        - protocol: TCP
+          port: 26656
+        - protocol: TCP
+          port: 443

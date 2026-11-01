@@ -1,0 +1,27 @@
+# Backend node Service. This must stay ClusterIP. Changing it to NodePort or
+# LoadBalancer would create a direct external path that bypasses Guard and
+# breaks the fail-closed design.
+#
+# The backend Deployment must carry app.kubernetes.io/name: blockchain-node so
+# this Service and the NetworkPolicy select it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: blockchain-node
+  namespace: blockchain
+  labels:
+    app.kubernetes.io/name: blockchain-node
+    app.kubernetes.io/part-of: blockchain
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: blockchain-node
+  ports:
+    - name: p2p
+      protocol: TCP
+      port: 26656
+      targetPort: p2p
+    - name: rpc
+      protocol: TCP
+      port: 26657
+      targetPort: rpc

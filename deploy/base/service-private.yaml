@@ -1,0 +1,28 @@
+# Private endpoints used by the backend node to reach fixed peers through
+# Guard. This Service must remain ClusterIP. A NodePort or LoadBalancer here
+# would create a direct external path and break the fail-closed design.
+apiVersion: v1
+kind: Service
+metadata:
+  name: l4guard-private
+  namespace: l4guard
+  labels:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/component: p2p
+    app.kubernetes.io/part-of: l4guard
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/component: egress
+  ports:
+    - name: egress-a
+      protocol: TCP
+      port: 31001
+      targetPort: egress-a
+    # Add one port per fixed peer. Keep the corresponding listener in the
+    # ConfigMap and the backend NetworkPolicy in sync.
+    # - name: egress-b
+    #   protocol: TCP
+    #   port: 31002
+    #   targetPort: egress-b

@@ -1,0 +1,54 @@
+# Guard configuration for the private fixed-peer egress listeners. The
+# backend connects to these listeners through l4guard-private. Each listener
+# maps one private port to one fixed peer.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: l4guard-egress-config
+  namespace: l4guard
+  labels:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/component: egress
+    app.kubernetes.io/part-of: l4guard
+data:
+  guard.toml: |
+    [limits]
+    # Per-replica budget. With two Guard replicas the backend can see up to
+    # 2 x max_connections sessions; size the backend accordingly.
+    max_connections = 128
+    max_connections_per_listener = 64
+    max_outbound_connections = 128
+    max_connections_per_ip = 8
+    max_new_connections_per_second = 50
+    new_connection_burst = 100
+    connect_timeout_ms = 5000
+    drain_timeout_ms = 15000
+    max_sessions = 128
+    max_ip_entries = 4096
+    ip_entry_ttl_seconds = 600
+    bandwidth_limit_bytes_per_second = 0
+
+    [policy]
+    # The private listeners serve the cluster backend only. Narrow this to the
+    # backend Pod CIDR if your cluster uses a different range.
+    allow = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]
+    deny = []
+    emergency_block = false
+
+    [observe]
+    level = "info"
+    log_rate_limit_per_second = 100
+    log_queue_capacity = 1024
+    metrics_listen = "0.0.0.0:9100"
+
+    # Replace with the fixed peer you want the backend to reach through Guard.
+    [[upstreams]]
+    name = "peer-a"
+    address = "203.0.113.10:26656"
+
+    [[listeners]]
+    name = "peer-a-egress"
+    listen = "0.0.0.0:31001"
+    mode = "outbound"
+    upstream = "peer-a"
+    enabled = true

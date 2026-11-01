@@ -1,0 +1,81 @@
+# Guard configuration for the public CometBFT HTTP RPC listener. The L7
+# section parses one HTTP/1.1 request per connection, checks the method policy,
+# and forwards a newly constructed request. Keep the allow list explicit.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: l4guard-rpc-config
+  namespace: l4guard
+  labels:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/component: rpc
+    app.kubernetes.io/part-of: l4guard
+data:
+  guard.toml: |
+    [limits]
+    # Per-replica budget. With two Guard replicas the backend can see up to
+    # 2 x max_connections sessions; size the backend accordingly.
+    max_connections = 128
+    max_connections_per_listener = 128
+    max_outbound_connections = 0
+    max_connections_per_ip = 8
+    max_new_connections_per_second = 50
+    new_connection_burst = 100
+    connect_timeout_ms = 5000
+    drain_timeout_ms = 15000
+    max_sessions = 256
+    max_ip_entries = 4096
+    ip_entry_ttl_seconds = 600
+    bandwidth_limit_bytes_per_second = 0
+
+    [policy]
+    allow = ["0.0.0.0/0", "::/0"]
+    deny = []
+    emergency_block = false
+
+    [observe]
+    level = "info"
+    log_rate_limit_per_second = 100
+    log_queue_capacity = 1024
+    metrics_listen = "0.0.0.0:9100"
+
+    [[upstreams]]
+    name = "cometbft-rpc"
+    address = "blockchain-node.blockchain.svc.cluster.local:26657"
+
+    [[listeners]]
+    name = "rpc-public"
+    listen = "0.0.0.0:26657"
+    mode = "inbound"
+    upstream = "cometbft-rpc"
+    enabled = true
+
+    [listeners.l7]
+    max_header_bytes = 16384
+    max_header_count = 64
+    header_timeout_ms = 5000
+    max_body_bytes = 1048576
+    body_timeout_ms = 10000
+    max_json_depth = 32
+    max_json_array = 256
+    max_batch = 32
+    allow_methods = [
+      "status",
+      "health",
+      "block",
+      "block_results",
+      "tx",
+      "abci_query",
+      "broadcast_tx_sync",
+      "broadcast_tx_async",
+      "broadcast_tx_commit",
+    ]
+    deny_methods = ["debug_traceCall", "debug_traceTransaction"]
+
+    [listeners.l7.expensive_methods.broadcast_tx_commit]
+    rate_per_second = 20
+    concurrent = 8
+
+    [listeners.l7.expensive_methods.abci_query]
+    rate_per_second = 50
+    concurrent = 16

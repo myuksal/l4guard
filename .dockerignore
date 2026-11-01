@@ -1,0 +1,6 @@
+.git
+.opencode
+target
+docs
+deploy
+*.md

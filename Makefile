@@ -1,7 +1,8 @@
 CARGO ?= cargo
 RUN_ARGS ?=
+IMAGE ?= ghcr.io/example/l4guard:0.1.0
 
-.PHONY: build release run run-release clean
+.PHONY: build release run run-release clean docker-build manifests check
 
 build:
 	$(CARGO) build
@@ -17,3 +18,15 @@ run-release:
 
 clean:
 	$(CARGO) clean
+
+docker-build:
+	docker build -t $(IMAGE) .
+
+manifests:
+	kubectl kustomize deploy/base
+	kubectl kustomize deploy/backend
+
+check:
+	$(CARGO) fmt --check
+	$(CARGO) clippy --all-targets --all-features -- -D warnings
+	$(CARGO) test
