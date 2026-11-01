@@ -1,0 +1,16 @@
+[package]
+name = "l4guard"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "L4 TCP guard proxy for blockchain nodes"
+publish = false
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
