@@ -142,7 +142,10 @@ impl Relay {
     /// Returns a handle for reading relay counters.
     #[must_use]
     pub fn stats(&self) -> StatsHandle {
-        StatsHandle(Arc::clone(&self.shared.stats))
+        StatsHandle::new(
+            Arc::clone(&self.shared.stats),
+            Arc::clone(&self.shared.sessions),
+        )
     }
 
     /// Returns a handle that can reload policy while the relay runs.
@@ -650,16 +653,7 @@ async fn serve_listener(context: Arc<ListenerContext>, listener: TcpListener) {
             break;
         }
         if context.gate.is_stopped() {
-            context
-                .shared
-                .stats
-                .rejected_stopped
-                .fetch_add(1, Ordering::Relaxed);
-            debug!(
-                listener = %context.name,
-                %peer,
-                "rejected by stopped listener"
-            );
+            record_rejection(&context, peer, &Rejection::Stopped);
             continue;
         }
 
@@ -689,24 +683,42 @@ async fn serve_listener(context: Arc<ListenerContext>, listener: TcpListener) {
 }
 
 /// Counts and logs one rejected connection.
+///
+/// Every rejection carries the same `reason` field so a log pipeline can group
+/// them without parsing the message. The policy version is attached only when
+/// debug logging is enabled.
 fn record_rejection(context: &ListenerContext, peer: SocketAddr, rejection: &Rejection) {
     let stats = &context.shared.stats;
     match rejection {
         Rejection::Stopped => {
             stats.rejected_stopped.fetch_add(1, Ordering::Relaxed);
-            debug!(listener = %context.name, %peer, "rejected by stopped listener");
+            debug!(
+                listener = %context.name,
+                %peer,
+                reason = "stopped",
+                version = %context.shared.policy.current().version(),
+                "connection rejected"
+            );
         }
         Rejection::Policy => {
             stats.rejected_policy.fetch_add(1, Ordering::Relaxed);
-            debug!(listener = %context.name, %peer, "rejected by address policy");
+            debug!(
+                listener = %context.name,
+                %peer,
+                reason = "policy",
+                version = %context.shared.policy.current().version(),
+                "connection rejected"
+            );
         }
         Rejection::PerIp(error) => {
             stats.rejected_per_ip.fetch_add(1, Ordering::Relaxed);
             debug!(
                 listener = %context.name,
                 %peer,
-                reason = %error,
-                "rejected by per-IP budget"
+                reason = "per_ip",
+                detail = %error,
+                version = %context.shared.policy.current().version(),
+                "connection rejected"
             );
         }
         Rejection::Rate => {
@@ -714,24 +726,50 @@ fn record_rejection(context: &ListenerContext, peer: SocketAddr, rejection: &Rej
             debug!(
                 listener = %context.name,
                 %peer,
-                "rejected by new-connection rate limit"
+                reason = "rate",
+                version = %context.shared.policy.current().version(),
+                "connection rejected"
             );
         }
         Rejection::Budget => {
             stats.rejected_budget.fetch_add(1, Ordering::Relaxed);
-            debug!(listener = %context.name, %peer, "rejected by connection budget");
+            debug!(
+                listener = %context.name,
+                %peer,
+                reason = "budget",
+                version = %context.shared.policy.current().version(),
+                "connection rejected"
+            );
         }
         Rejection::Sessions(RegisterError::Rejected) => {
             stats.rejected_policy.fetch_add(1, Ordering::Relaxed);
-            debug!(listener = %context.name, %peer, "rejected during registration");
+            debug!(
+                listener = %context.name,
+                %peer,
+                reason = "policy",
+                version = %context.shared.policy.current().version(),
+                "connection rejected"
+            );
         }
         Rejection::Sessions(RegisterError::Stopped) => {
             stats.rejected_stopped.fetch_add(1, Ordering::Relaxed);
-            debug!(listener = %context.name, %peer, "stopped during registration");
+            debug!(
+                listener = %context.name,
+                %peer,
+                reason = "stopped",
+                version = %context.shared.policy.current().version(),
+                "connection rejected"
+            );
         }
         Rejection::Sessions(RegisterError::Full) => {
             stats.rejected_sessions.fetch_add(1, Ordering::Relaxed);
-            debug!(listener = %context.name, %peer, "rejected by session registry");
+            debug!(
+                listener = %context.name,
+                %peer,
+                reason = "sessions",
+                version = %context.shared.policy.current().version(),
+                "connection rejected"
+            );
         }
     }
 }
@@ -751,6 +789,22 @@ async fn handle_session(
         () = session.cancel().cancelled() => Err(SessionError::Cancelled),
         result = relay(context.as_ref(), stream) => result,
     };
+    record_outcome(&context, peer, started, &session, outcome);
+    // Return the admission slots before the registry entry, so a drain that
+    // observes an empty registry also observes released budgets.
+    drop(ip_permit);
+    drop(permits);
+    drop(session);
+}
+
+/// Counts and logs how one session ended.
+fn record_outcome(
+    context: &ListenerContext,
+    peer: SocketAddr,
+    started: Instant,
+    session: &SessionGuard,
+    outcome: Result<(u64, u64), SessionError>,
+) {
     match outcome {
         Ok((to_upstream, to_client)) => {
             context
@@ -774,6 +828,7 @@ async fn handle_session(
                 to_upstream,
                 to_client,
                 elapsed_ms = started.elapsed().as_millis(),
+                version = %context.shared.policy.current().version(),
                 "session closed"
             );
         }
@@ -789,8 +844,10 @@ async fn handle_session(
                     warn!(
                         listener = %context.name,
                         %peer,
+                        reason = "connect_timeout",
                         error = %error,
                         elapsed_ms,
+                        version = %context.shared.policy.current().version(),
                         "session failed"
                     );
                 }
@@ -803,8 +860,10 @@ async fn handle_session(
                     warn!(
                         listener = %context.name,
                         %peer,
+                        reason = "connect_failed",
                         error = %error,
                         elapsed_ms,
+                        version = %context.shared.policy.current().version(),
                         "session failed"
                     );
                 }
@@ -817,8 +876,10 @@ async fn handle_session(
                     debug!(
                         listener = %context.name,
                         %peer,
+                        reason = "copy",
                         error = %error,
                         elapsed_ms,
+                        version = %context.shared.policy.current().version(),
                         "session ended with copy error"
                     );
                 }
@@ -832,18 +893,15 @@ async fn handle_session(
                         listener = %context.name,
                         %peer,
                         session = session.id(),
+                        reason = "cancelled",
                         elapsed_ms,
+                        version = %context.shared.policy.current().version(),
                         "session cancelled"
                     );
                 }
             }
         }
     }
-    // Return the admission slots before the registry entry, so a drain that
-    // observes an empty registry also observes released budgets.
-    drop(ip_permit);
-    drop(permits);
-    drop(session);
 }
 
 /// Connects to the fixed upstream and copies bytes in both directions.
@@ -1097,6 +1155,8 @@ struct Stats {
 /// A point-in-time copy of relay counters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StatsSnapshot {
+    /// Sessions that are registered and relaying right now.
+    pub active_sessions: u64,
     /// Sessions that passed policy and budget checks.
     pub accepted: u64,
     /// Connections rejected by the address policy.
@@ -1132,8 +1192,9 @@ pub struct StatsSnapshot {
 }
 
 impl Stats {
-    fn snapshot(&self) -> StatsSnapshot {
+    fn snapshot(&self, active_sessions: u64) -> StatsSnapshot {
         StatsSnapshot {
+            active_sessions,
             accepted: self.accepted.load(Ordering::Relaxed),
             rejected_policy: self.rejected_policy.load(Ordering::Relaxed),
             rejected_budget: self.rejected_budget.load(Ordering::Relaxed),
@@ -1155,14 +1216,27 @@ impl Stats {
 }
 
 /// Shared handle for reading relay counters from outside the runtime.
-#[derive(Clone)]
-pub struct StatsHandle(Arc<Stats>);
+#[derive(Debug, Clone)]
+pub struct StatsHandle {
+    stats: Arc<Stats>,
+    sessions: Arc<Registry>,
+}
 
 impl StatsHandle {
+    /// Creates a handle over the counters and the session registry.
+    ///
+    /// The registry is the authority for the active-session gauge, so the
+    /// gauge cannot drift when a session task ends in an unexpected way.
+    #[must_use]
+    fn new(stats: Arc<Stats>, sessions: Arc<Registry>) -> Self {
+        Self { stats, sessions }
+    }
+
     /// Returns a point-in-time copy of the counters.
     #[must_use]
     pub fn snapshot(&self) -> StatsSnapshot {
-        self.0.snapshot()
+        let active = u64::try_from(self.sessions.len()).unwrap_or(u64::MAX);
+        self.stats.snapshot(active)
     }
 }
 
@@ -1241,7 +1315,7 @@ upstream = "node"
             .await
             .expect("bind relay listener");
         let address = listener.local_addr().expect("relay address");
-        let stats = StatsHandle(Arc::clone(&shared.stats));
+        let stats = StatsHandle::new(Arc::clone(&shared.stats), Arc::clone(&shared.sessions));
         let task = tokio::spawn(serve_listener(context, listener));
         TestRelay {
             address,
@@ -1777,7 +1851,7 @@ new_connection_burst = 1
         result.expect("relay shutdown");
 
         assert!(relay.shared.sessions.is_empty());
-        let snapshot = relay.shared.stats.snapshot();
+        let snapshot = relay.shared.stats.snapshot(0);
         assert_eq!(snapshot.accepted, 1, "late connection must be rejected");
         assert_eq!(snapshot.cancelled, 1);
         assert!(
@@ -1812,7 +1886,7 @@ new_connection_burst = 1
             .expect("relay task");
         result.expect("relay shutdown");
 
-        let snapshot = relay.shared.stats.snapshot();
+        let snapshot = relay.shared.stats.snapshot(0);
         assert_eq!(snapshot.completed, 1, "session must drain normally");
         assert_eq!(snapshot.cancelled, 0);
         assert!(relay.shared.sessions.is_empty());
@@ -1936,5 +2010,49 @@ new_connection_burst = 1
     #[test]
     fn zero_bandwidth_means_unlimited() {
         assert!(BandwidthLimiter::new(0).is_none());
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_serves_counters_and_rejects_unknown_paths() {
+        let upstream = spawn_echo_upstream().await;
+        let config = test_config(upstream, DEFAULT_LIMITS);
+        let endpoint = Endpoint::from_str(&upstream.to_string()).expect("endpoint");
+        let relay = start_relay(config, endpoint).await;
+        let server = crate::observe::MetricsServer::bind(
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            relay.stats.clone(),
+        )
+        .await
+        .expect("bind metrics endpoint");
+        let address = server.local_addr().expect("metrics address");
+        let task = tokio::spawn(server.run());
+
+        let response = http_get(address, "/metrics").await;
+        assert!(response.contains("HTTP/1.1 200 OK"));
+        assert!(response.contains("l4guard_active_sessions 0"));
+        assert!(response.contains("l4guard_policy_version "));
+        assert!(response.contains("l4guard_rejected_total{reason=\"policy\"} 0"));
+
+        let missing = http_get(address, "/config").await;
+        assert!(missing.contains("HTTP/1.1 404 Not Found"));
+
+        task.abort();
+    }
+
+    async fn http_get(address: SocketAddr, path: &str) -> String {
+        let mut stream = TcpStream::connect(address)
+            .await
+            .expect("connect metrics endpoint");
+        let request = format!("GET {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write request");
+        let mut response = Vec::new();
+        timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+            .await
+            .expect("metrics response timeout")
+            .expect("read metrics response");
+        String::from_utf8_lossy(&response).into_owned()
     }
 }

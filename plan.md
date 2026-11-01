@@ -260,6 +260,8 @@ Hot reload는 ACL·quota·긴급 중지 정책에 한정하고, listen 주소·u
 
 구현(E4)에서는 `SIGHUP`으로 설정 파일 전체를 다시 검증한 뒤, reload 가능한 항목만 원자적으로 교체합니다. 주소 정책·IP별 상한·신규 연결률·listener `enabled`가 reload 대상이며, 연결 예산·listener socket·upstream·관측 설정은 재시작 대상입니다. 실패 시 마지막 정상 정책을 유지하고 경고 로그를 남깁니다. 각 정책 snapshot에는 복제본 간 비교용 `policy_version`을 부여합니다. Quota는 복제본별이므로 backend 방향 총량은 `복제본 수 × max_connections`로 산정하며, 상세 절차와 예산 공식은 `docs/policy.md`에 기록합니다.
 
+구현(E5)에서는 로그를 `observe.log_rate_limit_per_second`와 `observe.log_queue_capacity`로 제한하고, 초과분은 버린 뒤 초당 1회 요약 로그로 대체합니다. 로그 이벤트는 `listener`·`peer`·`reason`·`version`·`session` 필드로 구조화합니다. 지표는 활성 세션, 거절 사유별 카운터, 송수신 바이트, upstream 실패, 정책 버전으로 정의하고, 로그와 선택적 `observe.metrics_listen`의 `GET /metrics`(Prometheus text)로 노출합니다. 설정·정책 전체 덤프는 남기지 않습니다. 상세 내용은 `docs/observe.md`에 기록합니다.
+
 또한 복제본별 quota라는 점을 명시해야 합니다. Guard 두 개에 각각 256개 제한을 두면 backend 방향 총량은 최대 512개가 될 수 있습니다. 초기에는 분산 카운터를 추가하기보다 복제본 수까지 포함해 예산을 정합니다.
 
 ---

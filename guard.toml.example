@@ -52,8 +52,13 @@ emergency_block = false
 
 [observe]
 level = "info"
+# Upper bounds for log emission. Events beyond the rate or queue limit are
+# dropped and reported as one summary line per second. See docs/observe.md.
 log_rate_limit_per_second = 100
 log_queue_capacity = 1024
+# Optional Prometheus text endpoint at GET /metrics. Leave unset to expose
+# metrics through logs only. Prefer a loopback or pod-internal address.
+# metrics_listen = "127.0.0.1:9100"
 
 # Fixed destinations. Inbound listeners relay public peers to the local node;
 # outbound listeners relay the local node to a fixed peer.

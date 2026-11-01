@@ -6,6 +6,7 @@
 //! without dropping the listeners.
 
 mod config;
+mod observe;
 mod policy;
 mod relay;
 mod sessions;
@@ -14,8 +15,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use config::Config;
-use config::LogLevel;
-use tracing::Level;
 use tracing::info;
 
 const USAGE: &str = "\
@@ -69,21 +68,35 @@ async fn run() -> Result<(), String> {
     let path = config_path.ok_or_else(|| format!("missing --config\n{USAGE}"))?;
     let path = std::path::PathBuf::from(path);
     let config = Config::load_shared(&path).map_err(|error| error.to_string())?;
-    init_logging(config.observe.level);
+    let log_guard = observe::init_logging(&config.observe);
     print_summary(&config);
 
     let relay = relay::Relay::bind(Arc::clone(&config))
         .await
         .map_err(|error| error.to_string())?;
     let stats = relay.stats();
+    let metrics_task = match config.observe.metrics_listen {
+        Some(address) => {
+            let server = observe::MetricsServer::bind(address, stats.clone())
+                .await
+                .map_err(|error| format!("cannot bind metrics endpoint {address}: {error}"))?;
+            info!(address = %address, "metrics endpoint ready");
+            Some(tokio::spawn(server.run()))
+        }
+        None => None,
+    };
     #[cfg(unix)]
     let reload_task = spawn_reload_task(relay.handle(), path);
     let result = relay.run(shutdown_signal()).await;
     #[cfg(unix)]
     reload_task.abort();
+    if let Some(task) = metrics_task {
+        task.abort();
+    }
     result.map_err(|error| error.to_string())?;
     let snapshot = stats.snapshot();
     info!(
+        active_sessions = snapshot.active_sessions,
         accepted = snapshot.accepted,
         rejected_policy = snapshot.rejected_policy,
         rejected_budget = snapshot.rejected_budget,
@@ -101,6 +114,7 @@ async fn run() -> Result<(), String> {
         policy_version = snapshot.policy_version,
         "shutdown complete"
     );
+    drop(log_guard);
     Ok(())
 }
 
@@ -167,25 +181,6 @@ fn spawn_reload_task(
     })
 }
 
-fn init_logging(level: LogLevel) {
-    let level = match level {
-        LogLevel::Trace => Level::TRACE,
-        LogLevel::Debug => Level::DEBUG,
-        LogLevel::Info => Level::INFO,
-        LogLevel::Warn => Level::WARN,
-        LogLevel::Error => Level::ERROR,
-    };
-    if let Err(error) = tracing_subscriber::fmt()
-        .with_max_level(level)
-        .with_target(false)
-        .with_ansi(false)
-        .with_writer(std::io::stderr)
-        .try_init()
-    {
-        eprintln!("l4guard: cannot initialize logging: {error}");
-    }
-}
-
 fn print_summary(config: &Config) {
     println!(
         "l4guard {}: loaded {} listener(s), {} upstream(s)",
@@ -230,4 +225,18 @@ fn print_summary(config: &Config) {
         config.policy.deny.len(),
         config.policy.emergency_block
     );
+    match config.observe.metrics_listen {
+        Some(address) => println!(
+            "  observe level={:?} log_rate={}/s log_queue={} metrics=http://{address}/metrics",
+            config.observe.level,
+            config.observe.log_rate_limit_per_second,
+            config.observe.log_queue_capacity
+        ),
+        None => println!(
+            "  observe level={:?} log_rate={}/s log_queue={} metrics=disabled",
+            config.observe.level,
+            config.observe.log_rate_limit_per_second,
+            config.observe.log_queue_capacity
+        ),
+    }
 }

@@ -50,6 +50,9 @@ kubectl exec deploy/l4guard -- kill -HUP 1
 연결 예산(semaphore)과 listener socket은 기동 시 고정되므로, 이를 바꾸려면
 Guard를 재배포한다. 재배포 중 backend 프로세스와 데이터는 유지된다.
 
+관측 설정(`observe`)과 지표·로그 상한은 재시작 대상이며, 상세 내용은
+`docs/observe.md`에 기록한다.
+
 ## 3. 긴급 차단
 
 특정 대역 또는 전체를 즉시 차단하려면 설정을 수정하고 `SIGHUP`을 보낸다.

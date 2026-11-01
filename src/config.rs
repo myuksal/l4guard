@@ -463,6 +463,12 @@ pub struct Observe {
     pub log_rate_limit_per_second: u32,
     /// Maximum number of queued log events.
     pub log_queue_capacity: usize,
+    /// Optional address for the metrics endpoint.
+    ///
+    /// When set, the guard serves Prometheus text metrics at `GET /metrics`.
+    /// Bind a loopback or pod-internal address and expose it through the
+    /// existing observation path rather than a public listener.
+    pub metrics_listen: Option<SocketAddr>,
 }
 
 impl Default for Observe {
@@ -471,6 +477,7 @@ impl Default for Observe {
             level: LogLevel::Info,
             log_rate_limit_per_second: 100,
             log_queue_capacity: 1_024,
+            metrics_listen: None,
         }
     }
 }
@@ -855,6 +862,7 @@ upstream = "node"
         assert_eq!(config.policy.allow, Vec::<IpNet>::new());
         assert!(!config.policy.emergency_block);
         assert_eq!(config.observe.level, LogLevel::Info);
+        assert_eq!(config.observe.metrics_listen, None);
         assert_eq!(config.listeners.len(), 1);
         assert_eq!(config.listeners[0].mode, ListenerMode::Inbound);
         assert_eq!(config.listeners[0].upstream, "node");
@@ -870,6 +878,18 @@ upstream = "node"
         let config = parse(&text).expect("disabled listener must be valid");
 
         assert!(!config.listeners[1].enabled);
+    }
+
+    #[test]
+    fn parses_metrics_endpoint() {
+        let text = format!("{MINIMAL}\n[observe]\nmetrics_listen = \"127.0.0.1:9100\"\n");
+
+        let config = parse(&text).expect("metrics endpoint must be valid");
+
+        assert_eq!(
+            config.observe.metrics_listen,
+            Some(SocketAddr::from(([127, 0, 0, 1], 9100)))
+        );
     }
 
     #[test]
