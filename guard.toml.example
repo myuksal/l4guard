@@ -1,0 +1,82 @@
+# l4guard example configuration.
+#
+# Copy this file to `guard.toml` and adjust addresses for the deployment.
+# Every value shown here is a conservative starting point, not a guarantee.
+# Invalid configuration stops startup instead of opening the proxy.
+#
+# Hot reload: send SIGHUP after editing policy.allow/deny/emergency_block,
+# limits.max_connections_per_ip, the new-connection rate fields, or a
+# listener's `enabled` flag. Other settings require a restart; a reload that
+# changes them is rejected and the last valid policy stays active. See
+# docs/policy.md for quota and replica budgeting.
+
+[limits]
+# Concurrent sessions across all listeners.
+max_connections = 256
+# Concurrent sessions for one listener.
+max_connections_per_listener = 256
+# Sessions reserved for outbound listeners. Inbound listeners may use at most
+# max_connections - max_outbound_connections, so an inbound flood cannot take
+# the slots a fixed peer needs to reconnect. Defaults to 0; it must be at least
+# 1 when an outbound listener is defined.
+max_outbound_connections = 64
+# Concurrent sessions from one source address on inbound listeners.
+# Hot-reloadable.
+max_connections_per_ip = 8
+# Sustained new-connection rate per listener. Hot-reloadable.
+max_new_connections_per_second = 50
+# Token bucket burst size for new connections. Hot-reloadable.
+new_connection_burst = 100
+# Upstream connection deadline in milliseconds.
+connect_timeout_ms = 5000
+# Time allowed for active sessions to close during shutdown, in milliseconds.
+# Sessions still open after this window are cancelled.
+drain_timeout_ms = 10000
+# Maximum entries in the session registry.
+max_sessions = 512
+# Maximum tracked per-IP entries and their idle lifetime.
+max_ip_entries = 4096
+ip_entry_ttl_seconds = 600
+# Per-listener byte budget in both directions. 0 means no budget.
+bandwidth_limit_bytes_per_second = 0
+
+[policy]
+# An address must match an allow entry and no deny entry.
+# The allow list is empty by default, which denies every source.
+# The policy applies to every listener, including outbound listeners: the
+# local node's source address must be allowed for those to work.
+# Use ["0.0.0.0/0", "::/0"] only when an upstream firewall provides filtering.
+allow = ["0.0.0.0/0", "::/0"]
+deny = []
+emergency_block = false
+
+[observe]
+level = "info"
+log_rate_limit_per_second = 100
+log_queue_capacity = 1024
+
+# Fixed destinations. Inbound listeners relay public peers to the local node;
+# outbound listeners relay the local node to a fixed peer.
+[[upstreams]]
+name = "cometbft-p2p"
+address = "10.0.0.5:26656"
+
+[[upstreams]]
+name = "peer-a"
+address = "203.0.113.10:26656"
+
+[[listeners]]
+name = "cometbft-p2p-public"
+listen = "0.0.0.0:26656"
+mode = "inbound"
+upstream = "cometbft-p2p"
+# Hot-reloadable. false stops this listener, closes new connections, and
+# cancels its existing sessions; the port stays bound (fail-closed).
+enabled = true
+
+[[listeners]]
+name = "peer-a-egress"
+listen = "127.0.0.1:31001"
+mode = "outbound"
+upstream = "peer-a"
+enabled = true

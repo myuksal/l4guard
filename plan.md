@@ -258,6 +258,8 @@ NetworkPolicy 변경이 기존 연결을 즉시 끊는지는 구현 의존이므
 
 Hot reload는 ACL·quota·긴급 중지 정책에 한정하고, listen 주소·upstream·프로토콜 모드 변경은 순차 재배포로 처리하면 코드가 단순해집니다.
 
+구현(E4)에서는 `SIGHUP`으로 설정 파일 전체를 다시 검증한 뒤, reload 가능한 항목만 원자적으로 교체합니다. 주소 정책·IP별 상한·신규 연결률·listener `enabled`가 reload 대상이며, 연결 예산·listener socket·upstream·관측 설정은 재시작 대상입니다. 실패 시 마지막 정상 정책을 유지하고 경고 로그를 남깁니다. 각 정책 snapshot에는 복제본 간 비교용 `policy_version`을 부여합니다. Quota는 복제본별이므로 backend 방향 총량은 `복제본 수 × max_connections`로 산정하며, 상세 절차와 예산 공식은 `docs/policy.md`에 기록합니다.
+
 또한 복제본별 quota라는 점을 명시해야 합니다. Guard 두 개에 각각 256개 제한을 두면 backend 방향 총량은 최대 512개가 될 수 있습니다. 초기에는 분산 카운터를 추가하기보다 복제본 수까지 포함해 예산을 정합니다.
 
 ---
