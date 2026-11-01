@@ -14,6 +14,7 @@ Quota와 마찬가지로 지표도 **복제본별 값**이므로, 전체 트래�
 | 지표 | 종류 | 의미 |
 |---|---|---|
 | `l4guard_active_sessions` | gauge | 현재 등록되어 중계 중인 세션 수 |
+| `l4guard_ip_entries` | gauge | IP별 상태 맵이 추적 중인 source 주소 수 |
 | `l4guard_accepted_total` | counter | 정책과 예산 검사를 통과한 세션 수 |
 | `l4guard_rejected_total{reason="policy"}` | counter | 주소 정책으로 거절된 연결 |
 | `l4guard_rejected_total{reason="budget"}` | counter | 연결 예산이 없어 거절된 연결 |
@@ -42,6 +43,8 @@ L7 거부 사유는 `malformed`, `header`, `body`, `timeout`, `method`,
 `l4guard_policy_version`은 정책과 quota의 입장 관련 설정으로 계산한 결정적
 digest다. 같은 설정을 쓰는 복제본은 재시작 여부와 관계없이 같은 값을
 보고하므로, 모든 Guard가 동일 정책을 적용했는지 비교할 수 있다.
+`l4guard_ip_entries`는 TTL이 지나지 않은 항목을 포함하며,
+`limits.max_ip_entries` 상한을 넘지 않는다.
 
 ## 2. 로그 상한
 

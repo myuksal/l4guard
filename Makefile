@@ -2,7 +2,7 @@ CARGO ?= cargo
 RUN_ARGS ?=
 IMAGE ?= ghcr.io/example/l4guard:0.1.0
 
-.PHONY: build release run run-release clean docker-build manifests check e8-check
+.PHONY: build release run run-release clean docker-build manifests check e8-check e9-check e9-recovery
 
 build:
 	$(CARGO) build
@@ -34,3 +34,9 @@ check:
 e8-check:
 	./scripts/e8-tls-passthrough.py
 	./scripts/e8-cometbft-sync.sh
+
+e9-check:
+	./scripts/e9-verify.py all
+
+e9-recovery:
+	./scripts/e9-cometbft-recovery.sh

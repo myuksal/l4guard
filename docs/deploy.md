@@ -321,3 +321,19 @@ kubectl -n blockchain get svc blockchain-node -o jsonpath='{.spec.type}'
 | E7-T5 | `/healthz`, `/readyz`, backend 비의존 probe |
 | E7-T6 | Deployment resources, 7장 측정 항목 |
 | E7-T7 | `l4guard.io/backend-node-id` annotation, 8장 |
+
+## 11. 운영 투입 전 부하·장애 검증
+
+배포 자산이 적용된 뒤에는 `docs/e9.md`의 절차로 다음을 확인한다.
+
+```sh
+make e9-check
+make e9-recovery
+```
+
+- 연결 폭주에서 task·map·FD·메모리가 상한 안에 머문다.
+- 긴급 차단과 listener 중지가 신규·기존 연결 모두에 적용된다.
+- backend 직통, outbound 직접, IPv6, UDP 우회 경로가 없다.
+- Guard 교체 중 backend 프로세스와 데이터가 유지되고 재접속된다.
+- 모든 Guard가 같은 `l4guard_policy_version`을 보고한다.
+- canary는 비서명 full node → validator 순서로 수행한다.

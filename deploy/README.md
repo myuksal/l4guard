@@ -54,3 +54,18 @@ make e8-check
 
 The operating procedure and acceptance criteria are in
 [`docs/e8.md`](../docs/e8.md).
+
+## Load, failure, and bypass checks
+
+- `scripts/e9-verify.py`: connection flood, emergency block, manifest/IPv6/UDP
+  bypass, Guard replacement, RPC policy bypass, and replica policy versions.
+- `scripts/e9-cometbft-recovery.sh`: real CometBFT peer/head-lag/RPC recovery
+  after a Guard replacement.
+
+```sh
+make e9-check
+make e9-recovery
+```
+
+The operating procedure, measured results, and canary order are in
+[`docs/e9.md`](../docs/e9.md).

@@ -405,6 +405,12 @@ fn render_gauges(out: &mut String, snapshot: &StatsSnapshot) {
     );
     gauge(
         out,
+        "l4guard_ip_entries",
+        "Source addresses currently tracked by the per-IP state map.",
+        snapshot.ip_entries,
+    );
+    gauge(
+        out,
         "l4guard_policy_version",
         "Deterministic version of the active policy snapshot.",
         snapshot.policy_version,

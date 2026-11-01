@@ -115,6 +115,7 @@ async fn run() -> Result<(), String> {
         + snapshot.l7_rejected_quota;
     info!(
         active_sessions = snapshot.active_sessions,
+        ip_entries = snapshot.ip_entries,
         accepted = snapshot.accepted,
         rejected_policy = snapshot.rejected_policy,
         rejected_budget = snapshot.rejected_budget,

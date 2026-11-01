@@ -146,6 +146,7 @@ impl Relay {
         StatsHandle::new(
             Arc::clone(&self.shared.stats),
             Arc::clone(&self.shared.sessions),
+            Arc::clone(&self.shared.ip_states),
         )
     }
 
@@ -1235,6 +1236,8 @@ struct Stats {
 pub struct StatsSnapshot {
     /// Sessions that are registered and relaying right now.
     pub active_sessions: u64,
+    /// Source addresses currently tracked by the per-IP state map.
+    pub ip_entries: u64,
     /// Sessions that passed policy and budget checks.
     pub accepted: u64,
     /// Connections rejected by the address policy.
@@ -1294,9 +1297,10 @@ pub struct StatsSnapshot {
 }
 
 impl Stats {
-    fn snapshot(&self, active_sessions: u64) -> StatsSnapshot {
+    fn snapshot(&self, active_sessions: u64, ip_entries: u64) -> StatsSnapshot {
         StatsSnapshot {
             active_sessions,
+            ip_entries,
             accepted: self.accepted.load(Ordering::Relaxed),
             rejected_policy: self.rejected_policy.load(Ordering::Relaxed),
             rejected_budget: self.rejected_budget.load(Ordering::Relaxed),
@@ -1334,23 +1338,31 @@ impl Stats {
 pub struct StatsHandle {
     stats: Arc<Stats>,
     sessions: Arc<Registry>,
+    ip_states: Arc<IpStates>,
 }
 
 impl StatsHandle {
-    /// Creates a handle over the counters and the session registry.
+    /// Creates a handle over the counters, the session registry, and the
+    /// per-IP state map.
     ///
     /// The registry is the authority for the active-session gauge, so the
-    /// gauge cannot drift when a session task ends in an unexpected way.
+    /// gauge cannot drift when a session task ends in an unexpected way. The
+    /// state map is the authority for the tracked-address gauge.
     #[must_use]
-    fn new(stats: Arc<Stats>, sessions: Arc<Registry>) -> Self {
-        Self { stats, sessions }
+    fn new(stats: Arc<Stats>, sessions: Arc<Registry>, ip_states: Arc<IpStates>) -> Self {
+        Self {
+            stats,
+            sessions,
+            ip_states,
+        }
     }
 
     /// Returns a point-in-time copy of the counters.
     #[must_use]
     pub fn snapshot(&self) -> StatsSnapshot {
         let active = u64::try_from(self.sessions.len()).unwrap_or(u64::MAX);
-        self.stats.snapshot(active)
+        let ip_entries = u64::try_from(self.ip_states.len()).unwrap_or(u64::MAX);
+        self.stats.snapshot(active, ip_entries)
     }
 }
 
@@ -1360,6 +1372,7 @@ mod tests {
     use std::net::Ipv4Addr;
     use std::path::Path;
     use std::str::FromStr;
+    use std::sync::atomic::AtomicUsize;
     use tokio::task::JoinHandle;
 
     const DEFAULT_LIMITS: &str = "\
@@ -1429,7 +1442,11 @@ upstream = "node"
             .await
             .expect("bind relay listener");
         let address = listener.local_addr().expect("relay address");
-        let stats = StatsHandle::new(Arc::clone(&shared.stats), Arc::clone(&shared.sessions));
+        let stats = StatsHandle::new(
+            Arc::clone(&shared.stats),
+            Arc::clone(&shared.sessions),
+            Arc::clone(&shared.ip_states),
+        );
         let task = tokio::spawn(serve_listener(context, listener));
         TestRelay {
             address,
@@ -1633,6 +1650,57 @@ upstream = "node"
         assert_eq!(snapshot.completed, 1);
         assert_eq!(snapshot.bytes_to_upstream, SIZE as u64);
         assert_eq!(snapshot.bytes_to_client, SIZE as u64);
+    }
+
+    #[tokio::test]
+    async fn connection_flood_stays_within_budgets_and_recovers() {
+        let upstream = spawn_echo_upstream().await;
+        let limits = "\
+max_connections = 8
+max_connections_per_listener = 8
+max_outbound_connections = 0
+max_sessions = 8
+max_connections_per_ip = 64
+max_ip_entries = 4
+max_new_connections_per_second = 1000
+new_connection_burst = 1000
+ip_entry_ttl_seconds = 1
+";
+        let config = test_config(upstream, limits);
+        let endpoint = Endpoint::from_str(&upstream.to_string()).expect("endpoint");
+        let relay = start_relay(config, endpoint).await;
+
+        let mut clients = Vec::new();
+        for _ in 0..64 {
+            if let Ok(client) = TcpStream::connect(relay.address).await {
+                clients.push(client);
+            }
+        }
+        wait_until(|| {
+            let snapshot = relay.stats.snapshot();
+            snapshot.active_sessions == 8
+                && snapshot.rejected_budget + snapshot.rejected_sessions > 0
+        })
+        .await;
+
+        let snapshot = relay.stats.snapshot();
+        assert_eq!(snapshot.active_sessions, 8, "one task per admitted session");
+        assert!(snapshot.accepted <= 8, "admission count must stay bounded");
+        assert!(
+            snapshot.rejected_budget + snapshot.rejected_sessions > 0,
+            "the flood must be rejected by a bound"
+        );
+        assert!(
+            snapshot.ip_entries <= 4,
+            "per-IP state map must stay within its entry cap"
+        );
+
+        drop(clients);
+        timeout(Duration::from_secs(2), relay.shared.sessions.wait_empty())
+            .await
+            .expect("registry must drain after the flood");
+        wait_until(|| relay.shared.ip_states.len() <= 4).await;
+        assert_eq!(relay.stats.snapshot().active_sessions, 0);
     }
 
     #[tokio::test]
@@ -1965,7 +2033,7 @@ new_connection_burst = 1
         result.expect("relay shutdown");
 
         assert!(relay.shared.sessions.is_empty());
-        let snapshot = relay.shared.stats.snapshot(0);
+        let snapshot = relay.shared.stats.snapshot(0, 0);
         assert_eq!(snapshot.accepted, 1, "late connection must be rejected");
         assert_eq!(snapshot.cancelled, 1);
         assert!(
@@ -2000,7 +2068,7 @@ new_connection_burst = 1
             .expect("relay task");
         result.expect("relay shutdown");
 
-        let snapshot = relay.shared.stats.snapshot(0);
+        let snapshot = relay.shared.stats.snapshot(0, 0);
         assert_eq!(snapshot.completed, 1, "session must drain normally");
         assert_eq!(snapshot.cancelled, 0);
         assert!(relay.shared.sessions.is_empty());
@@ -2361,6 +2429,94 @@ new_connection_burst = 1
         );
     }
 
+    #[tokio::test]
+    async fn l7_policy_bypass_shapes_never_reach_the_upstream() {
+        let (upstream, hits) = spawn_counting_http_upstream().await;
+        let config = l7_config(upstream, "max_batch = 4\n");
+        let endpoint = Endpoint::from_str(&upstream.to_string()).expect("endpoint");
+        let relay = start_relay(config, endpoint).await;
+
+        let allowed = l7_request(relay.address, "GET /status HTTP/1.1\r\nHost: node\r\n\r\n").await;
+        assert!(
+            allowed.starts_with("HTTP/1.1 200 OK"),
+            "response: {allowed}"
+        );
+        assert_eq!(hits.load(Ordering::Relaxed), 1);
+
+        let rejected = [
+            (
+                "GET /%73tatus HTTP/1.1\r\nHost: node\r\n\r\n",
+                "HTTP/1.1 400 Bad Request",
+            ),
+            (
+                "GET //status HTTP/1.1\r\nHost: node\r\n\r\n",
+                "HTTP/1.1 400 Bad Request",
+            ),
+            (
+                "GET http://node/status HTTP/1.1\r\nHost: node\r\n\r\n",
+                "HTTP/1.1 400 Bad Request",
+            ),
+            (
+                "GET /status/ HTTP/1.1\r\nHost: node\r\n\r\n",
+                "HTTP/1.1 400 Bad Request",
+            ),
+            (
+                "GET /debug_traceCall HTTP/1.1\r\nHost: node\r\n\r\n",
+                "HTTP/1.1 403 Forbidden",
+            ),
+            (
+                "POST / HTTP/1.1\r\nHost: node\r\nContent-Type: application/json\r\nContent-Length: 50\r\n\r\n[{\"method\":\"status\"},{\"method\":\"debug_traceCall\"}]",
+                "HTTP/1.1 403 Forbidden",
+            ),
+            (
+                "POST / HTTP/1.1\r\nHost: node\r\nContent-Type: application/json\r\nContent-Length: 46\r\n\r\n{\"method\":\"status\",\"method\":\"debug_traceCall\"}",
+                "HTTP/1.1 400 Bad Request",
+            ),
+            (
+                "POST / HTTP/1.1\r\nHost: node\r\nContent-Type: application/json\r\nContent-Length: 33\r\n\r\n{\"method\":\"debug_trace\\u0043all\"}",
+                "HTTP/1.1 403 Forbidden",
+            ),
+            (
+                "POST / HTTP/1.1\r\nHost: node\r\nUpgrade: websocket\r\nContent-Length: 0\r\n\r\n",
+                "HTTP/1.1 400 Bad Request",
+            ),
+            (
+                "POST / HTTP/1.1\r\nHost: node\r\nContent-Encoding: gzip\r\nContent-Length: 0\r\n\r\n",
+                "HTTP/1.1 415 Unsupported Media Type",
+            ),
+            (
+                "POST / HTTP/1.1\r\nHost: node\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+                "HTTP/1.1 400 Bad Request",
+            ),
+        ];
+        for (request, expected) in rejected {
+            let response = l7_request(relay.address, request).await;
+            assert!(
+                response.starts_with(expected),
+                "expected {expected} for {request:?}, got {response}"
+            );
+        }
+        assert_eq!(
+            hits.load(Ordering::Relaxed),
+            1,
+            "a rejected shape must not open an upstream connection"
+        );
+
+        // An escaped method name is decoded before the exact comparison. This
+        // must be admitted because the upstream executes the same method, and
+        // it proves the policy does not use a raw substring match.
+        let escaped = l7_request(
+            relay.address,
+            "POST / HTTP/1.1\r\nHost: node\r\nContent-Type: application/json\r\nContent-Length: 24\r\n\r\n{\"method\":\"\\u0073tatus\"}",
+        )
+        .await;
+        assert!(
+            escaped.starts_with("HTTP/1.1 200 OK"),
+            "response: {escaped}"
+        );
+        assert_eq!(hits.load(Ordering::Relaxed), 2);
+    }
+
     fn l7_config(upstream: SocketAddr, extra: &str) -> Arc<Config> {
         let text = format!(
             r#"
@@ -2425,6 +2581,36 @@ allow_methods = ["eth_call", "eth_blockNumber", "status"]
         (address, receiver)
     }
 
+    /// Accepts requests, counts them, and answers with a fixed response.
+    async fn spawn_counting_http_upstream() -> (SocketAddr, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind counting HTTP upstream");
+        let address = listener
+            .local_addr()
+            .expect("counting HTTP upstream address");
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                counter.fetch_add(1, Ordering::Relaxed);
+                tokio::spawn(async move {
+                    let _ = read_http_request(&mut stream).await;
+                    let _ = stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (address, hits)
+    }
+
     async fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
         let mut request = Vec::new();
         let mut chunk = [0_u8; 1024];
@@ -2467,6 +2653,7 @@ allow_methods = ["eth_call", "eth_blockNumber", "status"]
         let response = http_get(address, "/metrics").await;
         assert!(response.contains("HTTP/1.1 200 OK"));
         assert!(response.contains("l4guard_active_sessions 0"));
+        assert!(response.contains("l4guard_ip_entries 0"));
         assert!(response.contains("l4guard_policy_version "));
         assert!(response.contains("l4guard_rejected_total{reason=\"policy\"} 0"));
 

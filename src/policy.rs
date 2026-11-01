@@ -386,6 +386,7 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
     use std::net::Ipv6Addr;
+    use std::net::SocketAddr;
     use std::str::FromStr;
 
     use crate::config::Limits;
@@ -513,6 +514,30 @@ mod tests {
         let second = store(&["10.0.0.0/8"], &[], true);
 
         assert_ne!(first.current().version(), second.current().version());
+    }
+
+    #[test]
+    fn policy_version_ignores_listener_order() {
+        let listener = |name: &str, port: u16| config::Listener {
+            name: name.to_owned(),
+            listen: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            mode: config::ListenerMode::Inbound,
+            upstream: "node".to_owned(),
+            l7: None,
+            enabled: true,
+        };
+        let first = PolicyStore::new(&config_with(
+            policy_config(&["10.0.0.0/8"], &[], false),
+            Limits::default(),
+            vec![listener("a", 26656), listener("b", 26657)],
+        ));
+        let second = PolicyStore::new(&config_with(
+            policy_config(&["10.0.0.0/8"], &[], false),
+            Limits::default(),
+            vec![listener("b", 26657), listener("a", 26656)],
+        ));
+
+        assert_eq!(first.current().version(), second.current().version());
     }
 
     #[test]

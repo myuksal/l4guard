@@ -268,6 +268,8 @@ Hot reload는 ACL·quota·긴급 중지 정책에 한정하고, listen 주소·u
 
 구현(E8)에서는 `deploy/chains/cometbft`에 `allow_duplicate_ip`·`addr_book_strict`·`filter_peers`·`external_address`·PEX/seed 설정을, `deploy/chains/geth`에 discovery 비활성·static peer·`NetRestrict`·enode/ENR 광고 설정을 둡니다. 고정 egress는 peer별 `l4guard-private:3100x → 실제 peer` 매핑으로 구성하고, state-sync RPC는 backend에만 적용하는 `hostAliases`로 provider hostname을 `rpc-provider-a` ClusterIP에 매핑한 뒤 Guard가 실제 provider 주소로 TCP 중계합니다. Guard는 TLS를 종단하지 않으므로 SNI·Host·인증서 검증이 그대로 유지됩니다. Guard 자신의 DNS에는 재정의를 적용하지 않습니다. `scripts/e8-cometbft-sync.sh`는 실제 CometBFT validator/full node를 Docker로 띄워 full node가 Guard 경유로 블록을 동기화하는지 확인하고, `scripts/e8-tls-passthrough.py`는 SNI·Host 보존을 확인합니다. Geth snap sync는 상태가 있는 peer가 필요하므로 운영 환경 인수 절차로 남깁니다. PROXY protocol은 이 버전에서 수신하지 않으며, backend 스트림에 임의로 부착하지 않습니다. 신뢰 LB 한정 수신은 별도 단계로 미룹니다. 상세 내용은 `docs/e8.md`에 기록합니다.
 
+구현(E9)에서는 `scripts/e9-verify.py`로 연결 폭주(`load`), 긴급 차단·listener 중지(`emergency`), manifest·IPv6·UDP 우회(`bypass`), Guard 교체(`replace`), RPC 정책 우회(`rpc-bypass`), 복제본 정책 버전(`replicas`)을 블랙박스로 검증합니다. 폭주 시 task는 승인된 세션에만 생기고, 세션 registry·IP 상태 맵·FD·RSS가 상한 안에 머문 뒤 회수되는지 확인합니다. `scripts/e9-cometbft-recovery.sh`는 실제 CometBFT validator/full node에서 Guard를 제거·교체하고 peer 재접속, head lag 회복, Guard 경유 RPC 성공률을 별도로 측정합니다. `l4guard_ip_entries` gauge를 추가해 IP 상태 맵 크기를 관측합니다. canary는 비서명 full node → validator 순서로 수행하고 rollback 절차를 함께 문서화합니다. 상세 내용은 `docs/e9.md`에 기록합니다.
+
 또한 복제본별 quota라는 점을 명시해야 합니다. Guard 두 개에 각각 256개 제한을 두면 backend 방향 총량은 최대 512개가 될 수 있습니다. 초기에는 분산 카운터를 추가하기보다 복제본 수까지 포함해 예산을 정합니다.
 
 ---
