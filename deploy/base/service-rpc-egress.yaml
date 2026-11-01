@@ -1,0 +1,29 @@
+# Provider-specific internal Service for state-sync RPC. The backend resolves
+# the original provider hostname to this ClusterIP (for example with a
+# pod-scoped hostAlias), keeps its original TLS SNI and Host header, and Guard
+# relays the TCP stream to the real provider. Guard never terminates TLS and
+# never rewrites the HTTP Host header.
+#
+# Keep this Service ClusterIP. Exposing it would create a direct path to the
+# provider that bypasses Guard.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpc-provider-a
+  namespace: l4guard
+  labels:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/component: egress
+    app.kubernetes.io/part-of: l4guard
+  annotations:
+    l4guard.io/upstream: rpc.provider-a.example:443
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: l4guard
+    app.kubernetes.io/component: egress
+  ports:
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: rpc-provider-a

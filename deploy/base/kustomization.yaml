@@ -20,6 +20,7 @@ resources:
   - service-p2p.yaml
   - service-rpc.yaml
   - service-private.yaml
+  - service-rpc-egress.yaml
   - service-metrics.yaml
   - networkpolicy.yaml
   - pdb-p2p.yaml

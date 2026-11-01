@@ -39,6 +39,11 @@ spec:
           port: 31001
         - protocol: TCP
           port: 31002
+        - protocol: TCP
+          port: 32001
+        # Some CNIs match the pre-DNAT Service port.
+        - protocol: TCP
+          port: 443
     - from:
         - namespaceSelector:
             matchLabels:

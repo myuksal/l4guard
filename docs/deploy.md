@@ -21,6 +21,7 @@ deploy/base/                   # Guard 네임스페이스 자산
   service-p2p.yaml             # 공개 P2P LoadBalancer
   service-rpc.yaml             # 공개 RPC LoadBalancer
   service-private.yaml         # backend -> Guard 사설 ClusterIP
+  service-rpc-egress.yaml      # state-sync RPC provider별 ClusterIP
   service-metrics.yaml         # Prometheus / probe endpoint
   networkpolicy.yaml           # Guard ingress/egress
   pdb-p2p.yaml
@@ -30,6 +31,9 @@ deploy/backend/                # backend 네임스페이스 자산
   namespace.yaml
   service.yaml                 # ClusterIP only
   networkpolicy.yaml           # Guard 출처만 허용
+deploy/chains/                 # CometBFT/Geth backend 설정 예시
+  cometbft/
+  geth/
 ```
 
 공개 P2P, 공개 RPC, 사설 egress는 **별도 Deployment**다. 한 체인의 P2P
@@ -155,8 +159,8 @@ Guard(`deploy/base/networkpolicy.yaml`):
 
 - 공개 26656/26657 ingress는 LB/peer에서 허용한다. 실제 peer 필터는 Guard의
   `policy.allow`/`deny`가 담당한다.
-- 사설 31001/31002 ingress는 `blockchain` 네임스페이스의 backend Pod만
-  허용한다.
+- 사설 31001/31002(P2P)와 32001(state-sync RPC) ingress는 `blockchain`
+  네임스페이스의 backend Pod만 허용한다.
 - 9100은 monitoring 네임스페이스만 허용한다.
 - egress는 DNS, backend의 26656/26657, 고정 P2P peer와 state-sync RPC
   provider만 허용한다. peer/provider CIDR을 알면 `0.0.0.0/0`을 그 CIDR로
@@ -169,7 +173,7 @@ ClusterIP로 연결하지 못하면, backend Pod CIDR 또는 Service CIDR을 egr
 Backend(`deploy/backend/networkpolicy.yaml`):
 
 - ingress는 Guard Pod의 26656/26657과 monitoring의 9100만 허용한다.
-- egress는 DNS와 Guard 사설 listener 31001/31002만 허용한다.
+- egress는 DNS와 Guard 사설 listener 31001/31002/32001만 허용한다.
 - 그 밖의 내부 의존성은 주석 위치에 **명시적으로** 추가한다. default
   allow-all egress를 넣지 않는다.
 

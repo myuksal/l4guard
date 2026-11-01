@@ -2,7 +2,7 @@ CARGO ?= cargo
 RUN_ARGS ?=
 IMAGE ?= ghcr.io/example/l4guard:0.1.0
 
-.PHONY: build release run run-release clean docker-build manifests check
+.PHONY: build release run run-release clean docker-build manifests check e8-check
 
 build:
 	$(CARGO) build
@@ -30,3 +30,7 @@ check:
 	$(CARGO) fmt --check
 	$(CARGO) clippy --all-targets --all-features -- -D warnings
 	$(CARGO) test
+
+e8-check:
+	./scripts/e8-tls-passthrough.py
+	./scripts/e8-cometbft-sync.sh

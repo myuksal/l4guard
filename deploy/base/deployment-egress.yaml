@@ -66,6 +66,9 @@ spec:
             - name: egress-a
               containerPort: 31001
               protocol: TCP
+            - name: rpc-provider-a
+              containerPort: 32001
+              protocol: TCP
             - name: metrics
               containerPort: 9100
               protocol: TCP

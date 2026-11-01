@@ -1,0 +1,33 @@
+# Pod-scoped DNS override for state-sync RPC. Apply this only to the backend
+# Pod, never to the Guard Pod. The backend keeps the original TLS SNI and Host
+# header; Guard resolves the real provider hostname and relays the TCP stream.
+#
+# 1. Get the provider Service ClusterIP:
+#      kubectl -n l4guard get svc rpc-provider-a \
+#        -o jsonpath='{.spec.clusterIP}'
+# 2. Replace the placeholder below.
+# 3. Add the hostAliases block to the backend Pod spec.
+#
+# Verification:
+#   kubectl -n blockchain exec deploy/backend -- \
+#     getent hosts rpc.provider-a.example
+#   # must return the l4guard/rpc-provider-a ClusterIP
+#   kubectl -n l4guard exec deploy/l4guard-egress -- \
+#     getent hosts rpc.provider-a.example
+#   # must return the real provider address
+apiVersion: v1
+kind: Pod
+metadata:
+  name: backend-with-state-sync-rpc
+  namespace: blockchain
+  labels:
+    app.kubernetes.io/name: blockchain-node
+spec:
+  hostAliases:
+    - ip: "203.0.113.50"
+      hostnames:
+        - rpc.provider-a.example
+  containers:
+    - name: backend
+      image: example/blockchain-node:latest
+      # The rest of the backend Pod spec is chain-specific and omitted here.

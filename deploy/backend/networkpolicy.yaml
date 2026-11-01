@@ -63,6 +63,11 @@ spec:
           port: 31001
         - protocol: TCP
           port: 31002
+        - protocol: TCP
+          port: 32001
+        # Some CNIs match the pre-DNAT Service port.
+        - protocol: TCP
+          port: 443
     # Add only the internal dependencies this node actually needs. For example,
     # a separate execution/consensus client, a metrics collector, or a snapshot
     # store. Do not add a default allow-all egress rule.

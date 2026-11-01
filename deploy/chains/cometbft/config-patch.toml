@@ -1,0 +1,38 @@
+# CometBFT config.toml fragment for a backend node that reaches a fixed peer
+# through Guard. Apply these values to the node's own config.toml; this file is
+# not a complete CometBFT configuration.
+#
+# The backend sees Guard's private address as the peer source, so the node must
+# allow duplicate IPs and must not reject non-routable addresses.
+
+# Top-level. Leave the ABCI app address filter disabled; Guard owns the address
+# policy. If your app has its own peer filter, document and test it separately.
+filter_peers = false
+
+[p2p]
+laddr = "tcp://0.0.0.0:26656"
+
+# Public address peers should use. This is the Guard public P2P endpoint, not
+# the backend Pod IP.
+external_address = "p2p.example.com:26656"
+
+# Fixed peer through Guard's private outbound listener.
+# Replace the peer ID and the Guard Service name with your values.
+persistent_peers = "<peer-id>@l4guard-private.l4guard.svc.cluster.local:31001"
+
+# Do not learn peers directly. The backend should only use the configured path.
+seeds = ""
+pex = false
+seed_mode = false
+
+# Guard's private Service address is not publicly routable.
+addr_book_strict = false
+
+# Multiple external peers arrive from the same Guard address.
+allow_duplicate_ip = true
+
+# Optional: keep a private peer out of the address book and gossip.
+# private_peer_ids = "<peer-id>"
+
+# Optional: reconnect to the fixed peer regardless of peer limits.
+# unconditional_peer_ids = "<peer-id>"

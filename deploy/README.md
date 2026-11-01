@@ -38,3 +38,19 @@ kubectl -n l4guard get svc,pod,networkpolicy,pdb
 - Guard readiness (`/readyz`) never waits for the backend.
 - Replace the placeholder image, peer addresses, and namespace labels before
   applying to a real cluster.
+
+## Chain profiles and E8 checks
+
+- `deploy/chains/cometbft/`: fixed peer, `allow_duplicate_ip`,
+  `addr_book_strict`, PEX/seed settings, state-sync RPC host rewrite.
+- `deploy/chains/geth/`: discovery disabled, static peers, `NetRestrict`,
+  enode/ENR advertisement.
+- `scripts/e8-cometbft-sync.sh`: real CometBFT block sync through Guard.
+- `scripts/e8-tls-passthrough.py`: state-sync RPC TLS/SNI preservation.
+
+```sh
+make e8-check
+```
+
+The operating procedure and acceptance criteria are in
+[`docs/e8.md`](../docs/e8.md).

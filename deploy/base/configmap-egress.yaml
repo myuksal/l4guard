@@ -46,9 +46,23 @@ data:
     name = "peer-a"
     address = "203.0.113.10:26656"
 
+    # State-sync RPC provider. The backend resolves the original hostname to
+    # the rpc-provider-a Service in this namespace; Guard resolves the real
+    # provider hostname and relays the TLS stream without terminating it.
+    [[upstreams]]
+    name = "rpc-provider-a"
+    address = "rpc.provider-a.example:443"
+
     [[listeners]]
     name = "peer-a-egress"
     listen = "0.0.0.0:31001"
     mode = "outbound"
     upstream = "peer-a"
+    enabled = true
+
+    [[listeners]]
+    name = "rpc-provider-a-egress"
+    listen = "0.0.0.0:32001"
+    mode = "outbound"
+    upstream = "rpc-provider-a"
     enabled = true
